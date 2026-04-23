@@ -1,0 +1,69 @@
+# NNELS format enum — SOURCE OF TRUTH.
+#
+# Each entry has:
+#   id    — integer used in `?format={n}` on NNELS download URLs
+#   name  — stable UPPER_SNAKE_CASE constant (referenced by clients)
+#   label — human-readable label as NNELS renders it in the UI (used
+#           when parsing bookshelf / search result HTML)
+#
+# Loaded at import time by src/nnels/formats.py — edit here, then
+# the Python constants update automatically.
+
+formats:
+  - id: 1
+    name: DAISY_202_FULL_TEXT_AUDIO
+    label: "DAISY 202 - Full Text and Audio"
+  - id: 2
+    name: DAISY_3_FULL_TEXT_AUDIO
+    label: "DAISY 3 - Full Text and Audio"
+  - id: 3
+    name: BRF_ELECTRONIC_BRAILLE
+    label: "BRF - Electronic Braille"
+  - id: 4
+    name: MP3
+    label: "MP3"
+  - id: 5
+    name: DOC
+    label: "DOC"
+  - id: 6
+    name: PDF
+    label: "PDF"
+  - id: 7
+    name: EPUB_2
+    label: "EPUB 2"
+  - id: 8
+    name: EPUB_3
+    label: "EPUB 3"
+  - id: 9
+    name: AZW3
+    label: "AZW3 (78)"
+  - id: 10
+    name: EPUB_3_FULL_TEXT_AUDIO
+    label: "EPUB 3 - Full Text and Audio"
+  - id: 11
+    name: DAISY_202_AUDIO
+    label: "DAISY 202 - Audio"
+  - id: 12
+    name: DAISY_202_FULL_TEXT
+    label: "DAISY 202 - Full Text"
+  - id: 13
+    name: DAISY_3_AUDIO
+    label: "DAISY 3 - Audio"
+  - id: 14
+    name: DAISY_3_FULL_TEXT
+    label: "DAISY 3 - Full Text"
+  - id: 15
+    name: RTF
+    label: "RTF"
+  - id: 16
+    name: PRINT_BRAILLE
+    label: "Print Braille"
+  - id: 17
+    name: HARDCOPY_BRAILLE
+    label: "Hardcopy Braille"
+  - id: 18
+    name: EPUB_2_FIXED_LAYOUT
+    label: "EPUB 2 - Fixed-Layout"
+  - id: 19
+    name: EPUB_3_FIXED_LAYOUT
+    label: "EPUB 3 - Fixed-Layout"

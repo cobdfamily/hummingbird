@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Runtime state
+data/
+cache/
+
+# Playwright / session state (auth cookies — never commit)
+sessions/
+playwright/auth/
+.playwright/
+*_session.json
+storage-state.json
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Logs and local DB
+*.log
+*.db
+
+# OS / editor
+.DS_Store
+*.swp
+*.swo
+.idea/
+.vscode/
