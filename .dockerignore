@@ -1,0 +1,25 @@
+# Keep the build context lean and out of the image.
+.git
+.gitignore
+.github
+.venv
+venv
+.env
+.env.example
+.pytest_cache
+.ruff_cache
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.DS_Store
+PROJECT.md
+DEPLOYMENT.md
+CHANGELOG.md
+LICENSE
+tests
+data
+cache
+# README.md is intentionally NOT ignored: pyproject.toml's
+# `readme = ...` field is read by hatchling during the
+# in-container `uv sync`, so the file must reach the build context.

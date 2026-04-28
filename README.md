@@ -1,7 +1,13 @@
 # hummingbird
 
+[![test](https://github.com/cobdfamily/hummingbird/actions/workflows/test.yml/badge.svg)](https://github.com/cobdfamily/hummingbird/actions/workflows/test.yml)
+
 HTTP server for accessible-library workflows with a small plugin
 surface and a Kados-compatible RPC endpoint.
+
+> Deploying hummingbird in production? See **[DEPLOYMENT.md](DEPLOYMENT.md)**
+> for the full checklist (image pull from the kibble registry,
+> configure / run / verify, upgrades).
 
 Two protocol surfaces mount on the same FastAPI app:
 

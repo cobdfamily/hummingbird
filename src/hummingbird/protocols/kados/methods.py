@@ -11,6 +11,7 @@ else is stubbed.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -190,8 +191,6 @@ async def _set_protocol_version(data: dict, user: str | None, **_) -> bool:
 
 # Bookmarks: stored per-user under data_dir/bookmarks/{user}/{contentId}.json
 # Simple JSON blob — protocol treats the payload as opaque.
-
-import json
 
 
 def _bookmarks_dir(user: str):
