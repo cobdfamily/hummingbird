@@ -5,6 +5,17 @@ Versioning: SemVer; pre-1.0 minor bumps may break.
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-05-02
+
+### Fixed
+- ``pytest-cov`` added to the dev group. The CI workflow
+  invokes ``uv run pytest -q --cov --cov-report=term
+  --cov-report=xml`` but the dependency was missing; the
+  pytest job had been failing with "unrecognized arguments"
+  since v0.1.1. No ``fail_under`` gate is set yet (current
+  coverage is 64%); the report is informational until tests
+  fill it out.
+
 ## [0.1.4] - 2026-05-02
 
 ### Fixed
