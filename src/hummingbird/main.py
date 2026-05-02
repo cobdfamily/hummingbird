@@ -15,14 +15,15 @@ app = FastAPI(
         "/protocols/hummingbird/v1 (REST) and /protocols/kados/v1 (RPC, "
         "Kolibre KADOS adapter compatible)."
     ),
+    redoc_url="/redocs",
 )
 app.include_router(hummingbird_router)
 app.include_router(kados_router)
 
 
-@app.get("/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok", "version": __version__}
+@app.get("/", tags=["Health"])
+async def root():
+    return {"service": "hummingbird", "status": "ok"}
 
 
 @app.get("/formats")

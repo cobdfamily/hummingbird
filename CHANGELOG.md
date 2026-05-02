@@ -5,6 +5,28 @@ Versioning: SemVer; pre-1.0 minor bumps may break.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-05-02
+
+Standardise the FastAPI health and docs endpoints to
+match the cobdfamily microservice fleet conventions.
+
+### Changed
+- Liveness moved from `GET /health` to `GET /`.
+  The new payload is
+  `{"service": "hummingbird", "status": "ok"}` (no
+  more `version` field — `/openapi.json` already
+  exposes that).
+- ReDoc moved from the FastAPI default `/redoc` to
+  `/redocs` (trailing s) via
+  `redoc_url="/redocs"` on the `FastAPI()`
+  constructor. Swagger UI stays at `/docs`.
+- `DEPLOYMENT.md` "Verify" curl now hits `/`
+  instead of the (never-existed)
+  `/protocols/hummingbird/v1/health`.
+
+### Removed
+- `GET /health` — replaced by `GET /`.
+
 ## [0.1.1] - 2026-04-28
 
 First containerised release. Brings hummingbird into
@@ -58,6 +80,7 @@ five hooks (login, bookshelf, search, download,
 content). Without a plugin the server is fully
 functional with JSON-on-disk state.
 
-[Unreleased]: https://github.com/cobdfamily/hummingbird/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/cobdfamily/hummingbird/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/cobdfamily/hummingbird/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/cobdfamily/hummingbird/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/cobdfamily/hummingbird/commits/v0.1.0

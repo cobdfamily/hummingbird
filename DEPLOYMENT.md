@@ -104,9 +104,9 @@ Behind your TLS reverse proxy, route
 ## Verify
 
 ```sh
-# Hummingbird REST surface
+# Hummingbird liveness
 curl -fsS \
-  https://library.cobd.ca/protocols/hummingbird/v1/health
+  https://library.cobd.ca/
 
 # KADOS RPC surface (replace serviceAttributes with any
 # other read-only method)
