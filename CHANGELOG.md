@@ -5,6 +5,19 @@ Versioning: SemVer; pre-1.0 minor bumps may break.
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-05-02
+
+### Fixed
+- 0.1.3 only half-fixed CI: ``uv sync --frozen`` started
+  succeeding but ``uv run ruff check`` still tried to
+  resolve the editable ``nnels`` source and failed on the
+  missing ``../nnels`` path. The fix is to drop the
+  ``[tool.uv.sources]`` block and the ``local-plugins``
+  group entirely. Local devs who want to layer the editable
+  plugin in on top of a synced env do it explicitly with
+  ``uv pip install --editable ../nnels`` — we don't bake it
+  into pyproject.toml.
+
 ## [0.1.3] - 2026-05-02
 
 ### Fixed
