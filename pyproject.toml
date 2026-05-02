@@ -1,6 +1,6 @@
 [project]
 name = "hummingbird"
-version = "0.1.2"
+version = "0.1.3"
 description = "Accessible-library HTTP server with a plugin architecture and a Kados-compatible RPC surface"
 readme = "README.md"
 license = "AGPL-3.0"
@@ -23,9 +23,13 @@ dev = [
   "pytest>=8.3",
   "pytest-asyncio>=0.24",
   "ruff>=0.7",
-  # Local plugin for end-to-end testing. Production users install the
-  # plugin they want via `pip install nnels` (or any other plugin);
-  # hummingbird has no hard dependency on it.
+]
+
+# Optional local-only group: install with `uv sync --group local-plugins`
+# to pull the editable nnels checkout for end-to-end plugin testing.
+# Skipped by CI (which runs `uv sync --frozen` against the default
+# group set) so a missing `../nnels` checkout doesn't break the build.
+local-plugins = [
   "nnels",
 ]
 
@@ -46,4 +50,7 @@ target-version = "py312"
 src = ["src"]
 
 [tool.uv.sources]
+# Editable nnels checkout, used only when the optional
+# `local-plugins` dependency group is installed. CI doesn't sync that
+# group, so the missing path doesn't matter there.
 nnels = { path = "../nnels", editable = true }

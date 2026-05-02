@@ -5,6 +5,18 @@ Versioning: SemVer; pre-1.0 minor bumps may break.
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-05-02
+
+### Fixed
+- CI's `uv sync --frozen` no longer fails on the missing
+  `../nnels` editable path. The local-only nnels dep is
+  moved to a non-default `local-plugins` dependency group
+  that operators install manually with
+  `uv sync --group local-plugins` when they want the
+  editable plugin. Default sync (CI, fresh-checkout devs)
+  skips it. The CI test job has been failing with this
+  error since v0.1.1; now it passes.
+
 ## [0.1.2] - 2026-05-02
 
 Standardise the FastAPI health and docs endpoints to
