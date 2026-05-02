@@ -66,7 +66,7 @@ uv run hummingbird
 # or: uv run uvicorn hummingbird.main:app --reload
 ```
 
-Docs at `/docs`, `/redoc`.
+Docs at `/docs`, `/redocs`.
 
 ## Routes
 
