@@ -40,3 +40,8 @@ storage-state.json
 *.swo
 .idea/
 .vscode/
+
+# pytest-cov outputs (CI artifact only)
+coverage.xml
+.coverage
+htmlcov/
