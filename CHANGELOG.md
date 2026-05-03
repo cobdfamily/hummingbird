@@ -5,6 +5,42 @@ Versioning: SemVer; pre-1.0 minor bumps may break.
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-05-02
+
+### Tests
+- Coverage push from 70% to 89% (branch on). v0.1.7 covered
+  storage / plugins / download / the hummingbird REST surface
+  but left the entire kados protocol untested
+  (methods.py 29%, router.py 31%).
+
+  Added 38 tests in ``tests/test_router_kados.py`` covering:
+
+  - Router envelope validation (method/path mismatch -> 400),
+    unknown method -> 404, X-API-Key when KADOS_API_KEY is
+    set (missing/wrong -> 401, match -> 200), Authorization
+    parse (no header / wrong prefix / unknown token all
+    treated as anonymous), stub method
+    NotImplementedError -> 501, generic exception -> 500.
+  - Method handlers: ``authenticate`` happy / empty-username
+    / wrong-password, ``contentListExists`` known + unknown,
+    ``contentList`` anon / non-bookshelf / populated,
+    ``contentExists`` anon / invalid-id / present,
+    ``contentMetadata`` and ``contentResources`` with and
+    without contentId, ``contentAddBookshelf`` and
+    ``contentReturn`` anon / invalid-id / success,
+    ``startSession`` / ``stopSession`` /
+    ``setProtocolVersion``, and ``setBookmarks`` /
+    ``getBookmarks`` round-trip + every empty-result path.
+
+  kados/methods.py is now at 88%, kados/router.py at 99%.
+
+### Changed
+- ``tool.coverage.report.fail_under`` raised from 65 to 85
+  to reflect the new floor. The 4-point buffer absorbs
+  short-term drift. The remaining gap is mostly the
+  plugin-active code paths across both protocol routers —
+  those need a fake plugin fixture to exercise.
+
 ## [0.1.7] - 2026-05-02
 
 ### Tests
@@ -165,7 +201,8 @@ five hooks (login, bookshelf, search, download,
 content). Without a plugin the server is fully
 functional with JSON-on-disk state.
 
-[Unreleased]: https://github.com/cobdfamily/hummingbird/compare/v0.1.7...HEAD
+[Unreleased]: https://github.com/cobdfamily/hummingbird/compare/v0.1.8...HEAD
+[0.1.8]: https://github.com/cobdfamily/hummingbird/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/cobdfamily/hummingbird/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/cobdfamily/hummingbird/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/cobdfamily/hummingbird/compare/v0.1.4...v0.1.5

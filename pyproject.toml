@@ -1,6 +1,6 @@
 [project]
 name = "hummingbird"
-version = "0.1.7"
+version = "0.1.8"
 description = "Accessible-library HTTP server with a plugin architecture and a Kados-compatible RPC surface"
 readme = "README.md"
 license = "AGPL-3.0"
@@ -50,11 +50,12 @@ branch = true
 source = ["src/hummingbird"]
 
 [tool.coverage.report]
-# 65% gate. Real coverage with branch on is ~70% as of v0.1.7;
-# 5-point buffer absorbs short-term drift when new code lands
-# ahead of its tests. Push this number up over time as the
-# kados protocol surface (currently ~30%) gets test coverage.
-fail_under = 65
+# 85% gate. Real coverage with branch on is ~89% as of v0.1.8;
+# 4-point buffer absorbs short-term drift when new code lands
+# ahead of its tests. The remaining gap is mostly plugin-active
+# code paths in router/methods that need a fake plugin fixture
+# to exercise.
+fail_under = 85
 show_missing = true
 skip_covered = false
 exclude_lines = [
