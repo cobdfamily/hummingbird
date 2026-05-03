@@ -56,6 +56,9 @@ HUMMINGBIRD_PLUGIN=nnels          # optional; entry-point name
 HUMMINGBIRD_PUBLIC_CONTENT_URL=   # optional; fallback source for /download
 HUMMINGBIRD_DATA_DIR=./data
 HUMMINGBIRD_CACHE_DIR=./cache
+
+KADOS_API_KEY=                    # optional; gates the kados RPC surface
+                                  # via X-API-Key when set
 ```
 
 ## Run
@@ -66,7 +69,18 @@ uv run hummingbird
 # or: uv run uvicorn hummingbird.main:app --reload
 ```
 
-Docs at `/docs`, `/redocs`.
+Docs at `/docs` and `/redocs`. `/` returns
+`{"service":"hummingbird","status":"ok","version":"<n>"}`
+for liveness probes.
+
+## Tests
+
+```
+uv run pytest -q
+uv run pytest --cov   # with branch coverage
+```
+
+Coverage gate is set at 85%.
 
 ## Routes
 
