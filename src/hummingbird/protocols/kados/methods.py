@@ -189,6 +189,31 @@ async def _set_protocol_version(data: dict, user: str | None, **_) -> bool:
     return True
 
 
+# These three are "fire-and-forget" hooks KADOS calls on every
+# DODP session — when KADOS_LOG_LEVEL is INFO+ it pings
+# logSoapRequestAndResponse for every request, and the logOn
+# flow always pulls announcements + termsOfServiceAccepted. A
+# 501 stub here crashes the SOAP server with an
+# AdapterException, so they need to ack-with-default rather
+# than raise. Plugins that want real behaviour can override by
+# replacing the entry in _REGISTRY.
+
+
+@method("logSoapRequestAndResponse")
+async def _log_soap_request_and_response(data: dict, user: str | None, **_) -> None:
+    return None
+
+
+@method("announcements")
+async def _announcements(data: dict, user: str | None, **_) -> list:
+    return []
+
+
+@method("termsOfServiceAccepted")
+async def _terms_of_service_accepted(data: dict, user: str | None, **_) -> bool:
+    return True
+
+
 # Bookmarks: stored per-user under data_dir/bookmarks/{user}/{contentId}.json
 # Simple JSON blob — protocol treats the payload as opaque.
 
@@ -233,11 +258,10 @@ _STUBS = [
     "contentAccessState", "contentAccessible", "contentSample", "contentCategory",
     "contentSubCategory", "contentReturnDate", "contentIssuable", "contentIssue",
     "contentReturnable",
-    "announcements", "announcementInfo", "announcementExists", "announcementRead",
+    "announcementInfo", "announcementExists", "announcementRead",
     "menuDefault", "menuSearch", "menuBack", "menuNext", "menuContentQuestion",
     "requestedKey", "clientKey", "issuerInfo", "userCredentials",
-    "termsOfService", "termsOfServiceAccept", "termsOfServiceAccepted",
-    "logSoapRequestAndResponse",
+    "termsOfService", "termsOfServiceAccept",
 ]
 
 

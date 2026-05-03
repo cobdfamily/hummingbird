@@ -331,6 +331,39 @@ def test_set_protocol_version_always_true(client):
 
 
 # ---------------------------------------------------------------------------
+# fire-and-forget hooks — must ack rather than 501, otherwise KADOS
+# (with default log level) blows up on every DODP request.
+# ---------------------------------------------------------------------------
+
+
+def test_log_soap_request_and_response_is_a_noop(client):
+    """KADOS pings this for every SOAP request when log level is
+    INFO+. A 501 here crashed the openapi-kados adapter with an
+    AdapterException — caught by the kados-fronting integration
+    tests."""
+    r = _call(client, "logSoapRequestAndResponse", {"request": "...", "response": "..."})
+    assert r.status_code == 200
+    assert r.json() == {"data": None}
+
+
+def test_announcements_returns_empty_list(client):
+    """Standalone hummingbird has no service announcements; the
+    handler returns ``[]`` so KADOS' logon flow doesn't crash on
+    a 501."""
+    r = _call(client, "announcements")
+    assert r.status_code == 200
+    assert r.json() == {"data": []}
+
+
+def test_terms_of_service_accepted_is_true(client):
+    """No ToS gating in standalone — always-accepted is the right
+    default, and the call must not 501."""
+    r = _call(client, "termsOfServiceAccepted")
+    assert r.status_code == 200
+    assert r.json() == {"data": True}
+
+
+# ---------------------------------------------------------------------------
 # bookmarks
 # ---------------------------------------------------------------------------
 

@@ -5,6 +5,32 @@ Versioning: SemVer; pre-1.0 minor bumps may break.
 
 ## [Unreleased]
 
+## [0.1.9] - 2026-05-03
+
+### Fixed
+- KADOS' default log level (INFO) makes it ping
+  ``logSoapRequestAndResponse`` on every SOAP request, and
+  the logOn flow always pulls ``announcements`` and
+  ``termsOfServiceAccepted``. v0.1.8 had all three on the
+  ``_STUBS`` list, so each call returned 501 and crashed
+  the openapi-kados adapter with an ``AdapterException``
+  (which the SOAP layer surfaced as a 500 internal server
+  error to every client). Surfaced by the new
+  hummingbird-backed integration suite in
+  ``cobdfamily/openapi-kados``.
+
+  Promotes the three from stubs to fire-and-forget no-op
+  handlers:
+
+  - ``logSoapRequestAndResponse`` -> ``None``
+  - ``announcements`` -> ``[]``
+  - ``termsOfServiceAccepted`` -> ``True``
+
+  Plugins that want real behaviour can override by
+  replacing the entry in ``_REGISTRY``. Three new tests
+  in ``tests/test_router_kados.py`` lock the contract
+  so a future stub-list edit can't regress this.
+
 ## [0.1.8] - 2026-05-02
 
 ### Tests
@@ -201,7 +227,8 @@ five hooks (login, bookshelf, search, download,
 content). Without a plugin the server is fully
 functional with JSON-on-disk state.
 
-[Unreleased]: https://github.com/cobdfamily/hummingbird/compare/v0.1.8...HEAD
+[Unreleased]: https://github.com/cobdfamily/hummingbird/compare/v0.1.9...HEAD
+[0.1.9]: https://github.com/cobdfamily/hummingbird/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/cobdfamily/hummingbird/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/cobdfamily/hummingbird/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/cobdfamily/hummingbird/compare/v0.1.5...v0.1.6
