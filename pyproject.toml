@@ -1,6 +1,6 @@
 [project]
 name = "hummingbird"
-version = "0.1.6"
+version = "0.1.7"
 description = "Accessible-library HTTP server with a plugin architecture and a Kados-compatible RPC surface"
 readme = "README.md"
 license = "AGPL-3.0"
@@ -44,6 +44,25 @@ packages = ["src/hummingbird"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 asyncio_mode = "auto"
+
+[tool.coverage.run]
+branch = true
+source = ["src/hummingbird"]
+
+[tool.coverage.report]
+# 65% gate. Real coverage with branch on is ~70% as of v0.1.7;
+# 5-point buffer absorbs short-term drift when new code lands
+# ahead of its tests. Push this number up over time as the
+# kados protocol surface (currently ~30%) gets test coverage.
+fail_under = 65
+show_missing = true
+skip_covered = false
+exclude_lines = [
+  "pragma: no cover",
+  "raise NotImplementedError",
+  "if __name__ == .__main__.:",
+  "if TYPE_CHECKING:",
+]
 
 [tool.ruff]
 line-length = 100

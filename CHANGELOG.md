@@ -5,6 +5,47 @@ Versioning: SemVer; pre-1.0 minor bumps may break.
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-05-02
+
+### Tests
+- Coverage push from 53% to 74%. The previous suite covered
+  the formats helpers and a single round-trip, but skipped
+  most of ``storage.py``, all of ``plugins.py`` discovery,
+  the ``download.py`` public-source proxy, and the entire
+  hummingbird-protocol REST surface.
+
+  Added 57 tests across:
+
+  - ``tests/test_storage.py`` (new): bookshelf
+    add / remove / list / idempotent-duplicate / multi-format
+    paths, session write / read / clear / clear-no-op.
+    storage.py is now at 100%.
+  - ``tests/test_plugins.py`` (new): entry-point lookup
+    misses, ``load()`` failure, instantiation failure,
+    cache-on-success, and the abstract-class lock.
+    plugins.py is now at 100%.
+  - ``tests/test_download.py`` (new): cache-hit, the
+    public-source proxy across JSON listing
+    (``{"files":[...]}`` and bare list), HTML href
+    scrape, no-filename-found, stream failure cleanup,
+    no-public-url short-circuit. Uses
+    ``httpx.MockTransport`` rather than network. download.py
+    is now at 97%.
+  - ``tests/test_router_hummingbird.py`` (new): integration
+    tests through ``TestClient`` covering /login (env creds,
+    401, 400), /bookshelf list / add / remove / username
+    fallback, /search empty + validation, /download listing
+    (single + zip + 404), /download fetch (single, zip
+    member, 404 paths), /formats. router.py is now at 81%.
+
+### Changed
+- ``tool.coverage.report.fail_under`` introduced at 65 to
+  reflect the new floor. With branch coverage enabled real
+  coverage is ~70%; the 5-point buffer absorbs short-term
+  drift when new code lands ahead of its tests. Push this
+  number up over time as the kados protocol surface
+  (currently ~30%) gets coverage.
+
 ## [0.1.6] - 2026-05-02
 
 ### Added
@@ -124,7 +165,12 @@ five hooks (login, bookshelf, search, download,
 content). Without a plugin the server is fully
 functional with JSON-on-disk state.
 
-[Unreleased]: https://github.com/cobdfamily/hummingbird/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/cobdfamily/hummingbird/compare/v0.1.7...HEAD
+[0.1.7]: https://github.com/cobdfamily/hummingbird/compare/v0.1.6...v0.1.7
+[0.1.6]: https://github.com/cobdfamily/hummingbird/compare/v0.1.5...v0.1.6
+[0.1.5]: https://github.com/cobdfamily/hummingbird/compare/v0.1.4...v0.1.5
+[0.1.4]: https://github.com/cobdfamily/hummingbird/compare/v0.1.3...v0.1.4
+[0.1.3]: https://github.com/cobdfamily/hummingbird/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/cobdfamily/hummingbird/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/cobdfamily/hummingbird/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/cobdfamily/hummingbird/commits/v0.1.0

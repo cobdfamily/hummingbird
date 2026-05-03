@@ -1,0 +1,109 @@
+"""Storage-layer unit tests — bookshelf + session JSON I/O."""
+
+from __future__ import annotations
+
+import importlib
+
+import pytest
+
+
+@pytest.fixture
+def storage(tmp_path, monkeypatch):
+    """Re-import hummingbird.storage with the data dir pointed at
+    a per-test ``tmp_path``. Avoids cross-test pollution since
+    storage writes JSON to disk."""
+    monkeypatch.setenv("HUMMINGBIRD_DATA_DIR", str(tmp_path))
+    import hummingbird.config as config
+    import hummingbird.storage as storage
+    importlib.reload(config)
+    importlib.reload(storage)
+    return storage
+
+
+def test_list_bookshelf_empty_when_no_file(storage):
+    assert storage.list_bookshelf("alice") == []
+
+
+def test_add_to_bookshelf_writes_entry(storage):
+    ok = storage.add_to_bookshelf("alice", 42, format=1, title="Moby Dick")
+    assert ok is True
+    shelf = storage.list_bookshelf("alice")
+    assert len(shelf) == 1
+    assert shelf[0].id == 42
+    assert shelf[0].title == "Moby Dick"
+    assert shelf[0].formats[0].id == 1
+
+
+def test_add_to_bookshelf_idempotent_on_duplicate(storage):
+    """Same (book, format) added twice -> still one entry, ok=True."""
+    storage.add_to_bookshelf("alice", 42, format=1, title="X")
+    storage.add_to_bookshelf("alice", 42, format=1, title="X")
+    assert len(storage.list_bookshelf("alice")) == 1
+
+
+def test_add_same_book_different_format_keeps_both(storage):
+    storage.add_to_bookshelf("alice", 42, format=1, title="X")
+    storage.add_to_bookshelf("alice", 42, format=2, title="X")
+    assert len(storage.list_bookshelf("alice")) == 2
+
+
+def test_remove_from_bookshelf_drops_one_format(storage):
+    storage.add_to_bookshelf("alice", 42, format=1, title="X")
+    storage.add_to_bookshelf("alice", 42, format=2, title="X")
+    ok = storage.remove_from_bookshelf("alice", 42, format=1)
+    assert ok is True
+    remaining = storage.list_bookshelf("alice")
+    assert len(remaining) == 1
+    assert remaining[0].formats[0].id == 2
+
+
+def test_remove_from_bookshelf_drops_all_formats_when_format_none(storage):
+    """``format=None`` drops every format of the book — useful
+    for "remove from shelf" without caring which copy."""
+    storage.add_to_bookshelf("alice", 42, format=1, title="X")
+    storage.add_to_bookshelf("alice", 42, format=2, title="X")
+    ok = storage.remove_from_bookshelf("alice", 42, format=None)
+    assert ok is True
+    assert storage.list_bookshelf("alice") == []
+
+
+def test_remove_from_bookshelf_returns_false_when_no_match(storage):
+    """Nothing matched -> ok=False so the route can 404 cleanly."""
+    storage.add_to_bookshelf("alice", 42, format=1, title="X")
+    ok = storage.remove_from_bookshelf("alice", 999, format=1)
+    assert ok is False
+    # And the shelf wasn't rewritten.
+    assert len(storage.list_bookshelf("alice")) == 1
+
+
+# ---------------------------------------------------------------------------
+# sessions
+# ---------------------------------------------------------------------------
+
+
+def test_read_session_returns_none_when_no_file(storage):
+    assert storage.read_session("alice") is None
+
+
+def test_write_then_read_session_roundtrips(storage):
+    storage.write_session("alice", access_token="abc", scope="library")
+    record = storage.read_session("alice")
+    assert record is not None
+    assert record["username"] == "alice"
+    assert record["access_token"] == "abc"
+    assert record["scope"] == "library"
+    assert "created_at" in record
+
+
+def test_clear_session_removes_file(storage):
+    storage.write_session("alice", access_token="abc")
+    storage.clear_session("alice")
+    assert storage.read_session("alice") is None
+
+
+def test_clear_session_idempotent_when_no_file(storage):
+    """clear_session on a never-logged-in user is a silent no-op
+    (not an error). Important so logout calls always succeed
+    even if the session was already evicted."""
+    # Should not raise.
+    storage.clear_session("never-logged-in")
