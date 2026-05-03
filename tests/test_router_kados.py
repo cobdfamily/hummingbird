@@ -130,12 +130,15 @@ def test_session_header_unknown_token_treated_as_anon(client):
     assert r.json()["data"]["totalItems"] == 0
 
 
-def test_stub_method_returns_501(client):
-    """KADOS methods registered as stubs raise NotImplementedError ->
-    the router maps that to 501 with a structured detail."""
-    r = _call(client, "label")
-    assert r.status_code == 501
-    assert "label is not implemented" in r.json()["detail"]
+def test_stub_method_returns_null(client):
+    """KADOS stub methods now return ``{"data": null}`` rather than
+    raising 501 — KADOS' adapter treats any non-200 as fatal, so a
+    501 from a stub crashes every DODP request once log level is
+    INFO+. The mock_backend has always done this; hummingbird now
+    matches."""
+    r = _call(client, "menuBack")  # an arbitrary stub
+    assert r.status_code == 200
+    assert r.json() == {"data": None}
 
 
 def test_handler_unexpected_exception_returns_500(client, monkeypatch):
@@ -361,6 +364,44 @@ def test_terms_of_service_accepted_is_true(client):
     r = _call(client, "termsOfServiceAccepted")
     assert r.status_code == 200
     assert r.json() == {"data": True}
+
+
+def test_label_echoes_id_as_text(client):
+    """KADOS validates that ``label.text`` is non-empty when
+    building responses (it crashes ``logOnResponse`` builder if
+    ``serviceProvider.label.text`` is blank). Default echoes the
+    id as the text."""
+    r = _call(client, "label", {"id": "OpenAPI", "type": "serviceProvider"})
+    assert r.status_code == 200
+    body = r.json()["data"]
+    assert body["text"] == "OpenAPI"
+    assert body["audio"] is None
+    assert body["lang"] == "en"
+
+
+def test_label_falls_back_to_constant_when_id_missing(client):
+    r = _call(client, "label", {"type": "serviceProvider"})
+    body = r.json()["data"]
+    assert body["text"] == "label"  # non-empty fallback
+    assert body["lang"] == "en"
+
+
+def test_content_accessible_default_true(client):
+    """Anything on the bookshelf is accessible to its owner —
+    plugins with stricter policies override."""
+    r = _call(client, "contentAccessible", {"contentId": 42})
+    assert r.json()["data"] is True
+
+
+def test_content_returnable_default_true(client):
+    r = _call(client, "contentReturnable", {"contentId": 42})
+    assert r.json()["data"] is True
+
+
+def test_content_issuable_default_false(client):
+    """Standalone has no loan ceremony — nothing needs issuing."""
+    r = _call(client, "contentIssuable", {"contentId": 42})
+    assert r.json()["data"] is False
 
 
 # ---------------------------------------------------------------------------

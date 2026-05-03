@@ -252,12 +252,23 @@ async def _get_bookmarks(data: dict, user: str | None, **_) -> dict:
 # ==========================================================================
 # Phase 3+: stubs — wire up when a real client exercises them.
 # ==========================================================================
+#
+# Default for every stub is "return None". Matches the mock_backend's
+# catch-all philosophy: PHP decodes null and the adapter caller falls
+# back to whatever default makes sense for the return contract.
+# Returning a 501 here would crash the openapi-kados adapter with an
+# AdapterException — see the kados-fronting integration suite in
+# cobdfamily/openapi-kados.
+#
+# Plugins that want real behaviour replace the entry in _REGISTRY at
+# load time. The shape-typed helpers below cover the methods KADOS
+# strictly requires a non-null response from during the standard
+# logOn / list / read flow.
 
 _STUBS = [
-    "label", "contentLastModifiedDate", "contentAccessDate", "contentAccessMethod",
-    "contentAccessState", "contentAccessible", "contentSample", "contentCategory",
-    "contentSubCategory", "contentReturnDate", "contentIssuable", "contentIssue",
-    "contentReturnable",
+    "contentLastModifiedDate", "contentAccessDate", "contentAccessMethod",
+    "contentAccessState", "contentSample", "contentCategory",
+    "contentSubCategory", "contentReturnDate", "contentIssue",
     "announcementInfo", "announcementExists", "announcementRead",
     "menuDefault", "menuSearch", "menuBack", "menuNext", "menuContentQuestion",
     "requestedKey", "clientKey", "issuerInfo", "userCredentials",
@@ -267,13 +278,48 @@ _STUBS = [
 
 def _stub_factory(name: str) -> Handler:
     async def _stub(data: dict, user: str | None, **_) -> None:
-        raise NotImplementedError(
-            f"{name} is not implemented — handle on the Kados client or "
-            "extend hummingbird.protocols.kados.methods"
-        )
+        return None
     _stub.__name__ = f"_stub_{name}"
     return _stub
 
 
 for _name in _STUBS:
     _REGISTRY[_name] = _stub_factory(_name)
+
+
+# Methods KADOS calls during the default logOn / list / read flow that
+# expect a non-null response of a specific shape. Each returns a
+# minimal "no info" value so PHP can index into it without warnings.
+
+
+@method("label")
+async def _label(data: dict, user: str | None, **_) -> dict:
+    """A DODP ``label`` is roughly ``{text, audio?, lang}``. No
+    plugin loaded -> no real labels -> echo the requested id as
+    the text. KADOS validates that ``label.text`` is non-empty
+    when building responses (eg. ``serviceProvider.label.text``),
+    so a blank default crashes its response builder."""
+    label_id = str(data.get("id") or "label")
+    return {"text": label_id, "audio": None, "lang": "en"}
+
+
+@method("contentAccessible")
+async def _content_accessible(data: dict, user: str | None, **_) -> bool:
+    """Default-grant: anything on the bookshelf is accessible.
+    Plugins with stricter access policies override."""
+    return True
+
+
+@method("contentReturnable")
+async def _content_returnable(data: dict, user: str | None, **_) -> bool:
+    """Default-allow: anything on the bookshelf can be returned.
+    Plugins with one-way / time-windowed loans override."""
+    return True
+
+
+@method("contentIssuable")
+async def _content_issuable(data: dict, user: str | None, **_) -> bool:
+    """Standalone hummingbird has no loan ceremony — content is
+    just on the shelf — so any contentId queried for issuability
+    returns False (no issue needed)."""
+    return False

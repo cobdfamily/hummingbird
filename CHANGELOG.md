@@ -5,6 +5,49 @@ Versioning: SemVer; pre-1.0 minor bumps may break.
 
 ## [Unreleased]
 
+## [0.1.10] - 2026-05-03
+
+### Fixed
+- Continuing the kados-fronting integration work from
+  v0.1.9. The full SOAP logOn round-trip surfaced two more
+  layers of issues:
+
+  - The stub factory raised ``NotImplementedError`` for
+    every unimplemented method, which the router turned
+    into 501. The kolibreorg/kados PHP adapter treats any
+    non-200 as a fatal ``AdapterException``, so a
+    501 from any stub crashed every DODP request that
+    walked through it. Stub factory now returns
+    ``None`` (matching the mock_backend.py philosophy);
+    PHP decodes null and the adapter caller falls back
+    to whatever default makes sense for the return
+    contract.
+  - KADOS' response builder validates that
+    ``logOnResponse.serviceAttributes.serviceProvider.label.text``
+    is non-empty. A null or empty-string label crashes
+    the build with "logOnResponse could not be built".
+
+  Adds shape-typed default handlers for the four methods
+  KADOS strictly requires non-null responses from during
+  the standard logOn / list / read flow:
+
+  - ``label``       -> ``{text: <id>, audio: null, lang: "en"}``
+                       (echoes the requested id so text is
+                       always non-empty)
+  - ``contentAccessible``  -> ``True``
+  - ``contentReturnable``  -> ``True``
+  - ``contentIssuable``    -> ``False`` (no loan ceremony)
+
+  Removed the same four from ``_STUBS``. Five new tests
+  in ``tests/test_router_kados.py`` lock the contract,
+  and the existing ``test_stub_method_returns_501`` is
+  rewritten as ``test_stub_method_returns_null`` to
+  reflect the new default.
+
+  End-to-end SOAP logOn through
+  ``cobdfamily/openapi-kados`` now passes against the
+  fleet hummingbird image.
+
 ## [0.1.9] - 2026-05-03
 
 ### Fixed
@@ -227,7 +270,8 @@ five hooks (login, bookshelf, search, download,
 content). Without a plugin the server is fully
 functional with JSON-on-disk state.
 
-[Unreleased]: https://github.com/cobdfamily/hummingbird/compare/v0.1.9...HEAD
+[Unreleased]: https://github.com/cobdfamily/hummingbird/compare/v0.1.10...HEAD
+[0.1.10]: https://github.com/cobdfamily/hummingbird/compare/v0.1.9...v0.1.10
 [0.1.9]: https://github.com/cobdfamily/hummingbird/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/cobdfamily/hummingbird/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/cobdfamily/hummingbird/compare/v0.1.6...v0.1.7
