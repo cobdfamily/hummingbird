@@ -70,3 +70,18 @@ def test_kados_stub_raises_not_implemented():
     from hummingbird.protocols.kados.methods import get
     handler = get("label")
     assert handler is not None
+
+
+def test_root_health_includes_version():
+    from fastapi.testclient import TestClient
+
+    from hummingbird.main import app
+
+    with TestClient(app) as client:
+        r = client.get("/")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["service"] == "hummingbird"
+    assert body["status"] == "ok"
+    assert body["version"]
+    assert body["version"][0].isdigit()

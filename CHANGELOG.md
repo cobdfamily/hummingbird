@@ -5,6 +5,14 @@ Versioning: SemVer; pre-1.0 minor bumps may break.
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-05-02
+
+### Added
+- Health endpoint at ``/`` now returns ``"version"``. Sourced
+  from ``app.version`` so it stays in lockstep with
+  ``__version__``. Useful for confirming the running build
+  without hitting ``/docs``.
+
 ## [0.1.5] - 2026-05-02
 
 ### Fixed

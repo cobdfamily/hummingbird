@@ -23,7 +23,7 @@ app.include_router(kados_router)
 
 @app.get("/", tags=["Health"])
 async def root():
-    return {"service": "hummingbird", "status": "ok"}
+    return {"service": "hummingbird", "status": "ok", "version": app.version}
 
 
 @app.get("/formats")
