@@ -5,6 +5,51 @@ Versioning: SemVer; pre-1.0 minor bumps may break.
 
 ## [Unreleased]
 
+## [0.1.11] - 2026-05-03
+
+### Tests
+- Coverage push from 89% to 99% (branch on). The previous
+  suite covered the standalone (no-plugin) path through
+  both protocol surfaces but never instantiated a real
+  ``Plugin`` and stuffed it through ``active_plugin()``,
+  so every plugin-active branch in
+  ``protocols/hummingbird/router.py`` and
+  ``protocols/kados/methods.py`` (delegate-to-plugin on
+  success, fall through to default storage on
+  ``NotImplementedError``) was uncovered.
+
+  Added ``tests/test_plugin_active.py`` (25 tests) with
+  a deterministic ``FakePlugin`` that subclasses
+  ``Plugin`` and exposes one attribute per hook. Tests
+  flip a single attribute to either a real return value
+  or to ``NotImplementedError`` to walk both branches.
+
+  Coverage map:
+
+  - ``protocols/hummingbird/router.py`` 79% -> 99%
+    (login plugin success / failure / fall-through;
+    bookshelf list / add / remove plugin paths +
+    NI fall-through; search via plugin + format-filter
+    + NI fall-through; ``_guess_mime`` extra-mimes
+    table; ``_flatten_to_items`` format-id-zero skip;
+    download single-file 404).
+  - ``protocols/kados/methods.py`` 90% -> 100%
+    (authenticate via plugin + NI fall-through;
+    contentList via plugin + NI fall-through;
+    contentAddBookshelf via plugin + NI fall-through;
+    contentReturn via plugin + NI fall-through).
+  - ``protocols/kados/router.py`` 97% -> 100%
+    (HTTPException re-raise from a handler;
+    NotImplementedError from a handler -> 501).
+
+### Changed
+- ``tool.coverage.report.fail_under`` raised from 85
+  to 92.
+- ``tool.coverage.report.exclude_lines`` adds a pattern
+  matching a line containing only ``...`` so the
+  ``@abstractmethod`` body sentinels in
+  ``Plugin`` don't get flagged as missing.
+
 ## [0.1.10] - 2026-05-03
 
 ### Fixed
@@ -270,7 +315,8 @@ five hooks (login, bookshelf, search, download,
 content). Without a plugin the server is fully
 functional with JSON-on-disk state.
 
-[Unreleased]: https://github.com/cobdfamily/hummingbird/compare/v0.1.10...HEAD
+[Unreleased]: https://github.com/cobdfamily/hummingbird/compare/v0.1.11...HEAD
+[0.1.11]: https://github.com/cobdfamily/hummingbird/compare/v0.1.10...v0.1.11
 [0.1.10]: https://github.com/cobdfamily/hummingbird/compare/v0.1.9...v0.1.10
 [0.1.9]: https://github.com/cobdfamily/hummingbird/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/cobdfamily/hummingbird/compare/v0.1.7...v0.1.8

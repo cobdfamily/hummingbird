@@ -1,0 +1,498 @@
+"""Plugin-active branches across both protocol surfaces.
+
+The unit suite in test_router_hummingbird.py / test_router_kados.py
+exercises the standalone (no-plugin) path. These tests inject a
+deterministic ``FakePlugin`` into ``hummingbird.plugins._active``
+so the corresponding plugin-active branches (delegate to plugin
+on success, fall through to default storage on
+``NotImplementedError``) get covered too.
+"""
+
+from __future__ import annotations
+
+import importlib
+
+import pytest
+from fastapi.testclient import TestClient
+
+from hummingbird.models import BookRecord, FormatEntry, SearchResult
+from hummingbird.plugins import Plugin
+
+
+# ---------------------------------------------------------------------------
+# fake plugin
+# ---------------------------------------------------------------------------
+
+
+class FakePlugin(Plugin):
+    """Deterministic test double. Attribute-driven so individual
+    tests can flip a single hook to raise ``NotImplementedError``
+    without subclassing — that's how the routes' "plugin doesn't
+    answer -> fall back to default storage" branch is reached."""
+
+    name = "fake"
+
+    def __init__(self):
+        self.authenticate_returns: bool | type = True
+        self.list_bookshelf_returns: list | type = []
+        self.add_to_bookshelf_returns: bool | type = True
+        self.remove_from_bookshelf_returns: bool | type = True
+        self.search_returns: SearchResult | type = SearchResult(
+            query="", page=0, books=[],
+        )
+        self.calls: list[tuple[str, tuple]] = []
+
+    @staticmethod
+    def _maybe_raise(value):
+        if isinstance(value, type) and issubclass(value, BaseException):
+            raise value()
+        return value
+
+    async def authenticate(self, username, password):
+        self.calls.append(("authenticate", (username, password)))
+        return self._maybe_raise(self.authenticate_returns)
+
+    async def list_bookshelf(self, username):
+        self.calls.append(("list_bookshelf", (username,)))
+        return self._maybe_raise(self.list_bookshelf_returns)
+
+    async def add_to_bookshelf(self, username, node_id):
+        self.calls.append(("add_to_bookshelf", (username, node_id)))
+        return self._maybe_raise(self.add_to_bookshelf_returns)
+
+    async def remove_from_bookshelf(self, username, node_id):
+        self.calls.append(("remove_from_bookshelf", (username, node_id)))
+        return self._maybe_raise(self.remove_from_bookshelf_returns)
+
+    async def search(self, username, query, formats, page):
+        self.calls.append(("search", (username, query, formats, page)))
+        return self._maybe_raise(self.search_returns)
+
+
+# ---------------------------------------------------------------------------
+# fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def app_with_plugin(tmp_path, monkeypatch):
+    """Reload the whole module tree and stuff a FakePlugin into the
+    plugin registry so every route sees it. Returns a tuple of
+    (TestClient, plugin) so tests can flip behaviour per-call."""
+    monkeypatch.setenv("HUMMINGBIRD_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("HUMMINGBIRD_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setenv("HUMMINGBIRD_USERNAME", "alice")
+    monkeypatch.setenv("HUMMINGBIRD_PASSWORD", "secret")
+    monkeypatch.setenv("HUMMINGBIRD_PLUGIN", "")  # no entry-point lookup
+    monkeypatch.delenv("HUMMINGBIRD_PUBLIC_CONTENT_URL", raising=False)
+    monkeypatch.delenv("KADOS_API_KEY", raising=False)
+
+    import hummingbird.config as config
+    import hummingbird.download as download
+    import hummingbird.plugins as plugins
+    import hummingbird.storage as storage
+    importlib.reload(config)
+    importlib.reload(storage)
+    importlib.reload(download)
+    importlib.reload(plugins)
+    import hummingbird.protocols.kados.methods as kd_methods
+    import hummingbird.protocols.kados.router as kd_router
+    import hummingbird.protocols.hummingbird.router as hb_router
+    importlib.reload(kd_methods)
+    importlib.reload(kd_router)
+    importlib.reload(hb_router)
+    import hummingbird.main as main
+    importlib.reload(main)
+
+    fake = FakePlugin()
+    # active_plugin() short-circuits on _loaded=True without re-running
+    # the entry-point discovery — perfect injection point.
+    plugins._active = fake
+    plugins._loaded = True
+
+    return TestClient(main.app), fake
+
+
+# ---------------------------------------------------------------------------
+# /login — plugin-active branches
+# ---------------------------------------------------------------------------
+
+
+def test_login_plugin_authenticate_success(app_with_plugin):
+    client, plugin = app_with_plugin
+    plugin.authenticate_returns = True
+    r = client.post("/protocols/hummingbird/v1/login?username=u&password=p")
+    assert r.status_code == 200
+    assert r.json()["authenticated"] is True
+    # And the plugin saw the right credentials.
+    assert plugin.calls[-1] == ("authenticate", ("u", "p"))
+
+
+def test_login_plugin_authenticate_failure(app_with_plugin):
+    client, plugin = app_with_plugin
+    plugin.authenticate_returns = False
+    r = client.post("/protocols/hummingbird/v1/login?username=u&password=p")
+    assert r.status_code == 401
+
+
+def test_login_plugin_not_implemented_falls_back_to_env(app_with_plugin):
+    """Plugin raises NotImplementedError -> route falls through to the
+    HUMMINGBIRD_USERNAME/PASSWORD env-credential check. With matching
+    creds, login still succeeds."""
+    client, plugin = app_with_plugin
+    plugin.authenticate_returns = NotImplementedError
+    # Env creds (alice/secret per fixture) match -> success.
+    r = client.post("/protocols/hummingbird/v1/login?username=alice&password=secret")
+    assert r.status_code == 200
+    # Wrong creds via the env fallback -> 401.
+    r = client.post("/protocols/hummingbird/v1/login?username=alice&password=nope")
+    assert r.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# /bookshelf — plugin-active branches
+# ---------------------------------------------------------------------------
+
+
+def _book(node_id: int, title: str, formats: list[tuple[int, str, str | None]]):
+    return BookRecord(
+        id=node_id, title=title,
+        formats=[FormatEntry(id=fid, label=label, narrator=narr)
+                 for fid, label, narr in formats],
+    )
+
+
+def test_bookshelf_list_via_plugin(app_with_plugin):
+    client, plugin = app_with_plugin
+    plugin.list_bookshelf_returns = [
+        _book(42, "Moby Dick", [(4, "MP3", "Pat Bottoms")]),
+        _book(99, "War and Peace", [(11, "DAISY 202 Audio", None)]),
+    ]
+    r = client.get("/protocols/hummingbird/v1/bookshelf/list?username=u")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["count"] == 2
+    titles = [item["title"] for item in body["items"]]
+    assert any("Moby Dick" in t and "Pat Bottoms" in t for t in titles)
+    assert any("War and Peace" in t for t in titles)
+    assert plugin.calls[-1] == ("list_bookshelf", ("u",))
+
+
+def test_bookshelf_list_plugin_not_implemented_falls_back_to_storage(app_with_plugin):
+    """Plugin raises NotImplementedError -> route reads from the
+    JSON-backed default storage (which is empty here)."""
+    client, plugin = app_with_plugin
+    plugin.list_bookshelf_returns = NotImplementedError
+    r = client.get("/protocols/hummingbird/v1/bookshelf/list?username=u")
+    assert r.status_code == 200
+    assert r.json()["count"] == 0
+
+
+def test_bookshelf_add_via_plugin_returns_success_flag(app_with_plugin):
+    client, plugin = app_with_plugin
+    plugin.add_to_bookshelf_returns = True
+    r = client.post("/protocols/hummingbird/v1/bookshelf/add/42?username=u")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["success"] is True
+    assert body["action"] == "add"
+    assert plugin.calls[-1] == ("add_to_bookshelf", ("u", 42))
+
+
+def test_bookshelf_add_plugin_not_implemented_falls_through(app_with_plugin):
+    """Plugin -> NotImplementedError -> default storage handles add.
+    Verify by then listing the shelf and seeing the entry."""
+    client, plugin = app_with_plugin
+    plugin.add_to_bookshelf_returns = NotImplementedError
+    plugin.list_bookshelf_returns = NotImplementedError
+    r = client.post(
+        "/protocols/hummingbird/v1/bookshelf/add/42?username=u&format=4&title=X"
+    )
+    assert r.status_code == 200
+    assert r.json()["success"] is True
+    r = client.get("/protocols/hummingbird/v1/bookshelf/list?username=u")
+    # Default storage now has the entry.
+    assert r.json()["count"] == 1
+
+
+def test_bookshelf_remove_via_plugin(app_with_plugin):
+    client, plugin = app_with_plugin
+    plugin.remove_from_bookshelf_returns = True
+    r = client.post("/protocols/hummingbird/v1/bookshelf/remove/42?username=u")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["success"] is True
+    assert body["action"] == "remove"
+    assert plugin.calls[-1] == ("remove_from_bookshelf", ("u", 42))
+
+
+def test_bookshelf_remove_plugin_not_implemented_falls_through(app_with_plugin):
+    """NotImplementedError -> default storage path. The shelf is empty,
+    so storage.remove returns False (nothing to remove)."""
+    client, plugin = app_with_plugin
+    plugin.remove_from_bookshelf_returns = NotImplementedError
+    r = client.post("/protocols/hummingbird/v1/bookshelf/remove/42?username=u")
+    assert r.status_code == 200
+    assert r.json()["success"] is False
+
+
+# ---------------------------------------------------------------------------
+# /search — plugin-active branches
+# ---------------------------------------------------------------------------
+
+
+def test_search_via_plugin_returns_books(app_with_plugin):
+    client, plugin = app_with_plugin
+    plugin.search_returns = SearchResult(
+        query="moby", page=0,
+        books=[_book(42, "Moby Dick", [(4, "MP3", None)])],
+        total_pages=1, total_results=1,
+    )
+    r = client.get("/protocols/hummingbird/v1/search?q=moby&username=u")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["count"] == 1
+    assert body["total_pages"] == 1
+    assert body["total_results"] == 1
+    assert plugin.calls[-1] == ("search", ("u", "moby", None, 0))
+
+
+def test_search_via_plugin_with_formats_filter_applies_in_route(app_with_plugin):
+    """Route enforces a ``formats=`` filter even when the plugin
+    didn't filter (a plugin is allowed to return all formats and
+    let the route narrow). Books that have no remaining format
+    after filtering drop out of the response."""
+    client, plugin = app_with_plugin
+    plugin.search_returns = SearchResult(
+        query="x", page=0,
+        books=[
+            _book(1, "MP3 only", [(4, "MP3", None)]),
+            _book(2, "BRF only", [(3, "BRF", None)]),
+            _book(3, "Both",     [(4, "MP3", None), (3, "BRF", None)]),
+        ],
+        total_pages=1, total_results=3,
+    )
+    r = client.get(
+        "/protocols/hummingbird/v1/search?q=x&username=u&formats=4"
+    )
+    assert r.status_code == 200
+    titles = [item["title"] for item in r.json()["items"]]
+    # MP3-only stays; BRF-only drops; Both keeps only the MP3 entry.
+    assert any("MP3 only" in t for t in titles)
+    assert not any("BRF only" in t for t in titles)
+
+
+def test_search_plugin_not_implemented_returns_empty(app_with_plugin):
+    """Plugin -> NotImplementedError -> route returns an empty
+    SearchResult rather than 501-ing the caller."""
+    client, plugin = app_with_plugin
+    plugin.search_returns = NotImplementedError
+    r = client.get("/protocols/hummingbird/v1/search?q=x&username=u")
+    assert r.status_code == 200
+    assert r.json()["count"] == 0
+
+
+# ---------------------------------------------------------------------------
+# kados methods — plugin-active branches
+# ---------------------------------------------------------------------------
+
+
+def _kados(client, name, data=None, *, headers=None):
+    return client.post(
+        f"/protocols/kados/v1/methods/{name}/",
+        json={"method": name, "data": data or {}},
+        headers=headers or {},
+    )
+
+
+def _login_kados(client) -> str:
+    """Authenticate via kados and return the session token. Used to
+    reach the user-scoped methods (contentList, contentAddBookshelf,
+    contentReturn) which all gate on session_user()."""
+    r = _kados(client, "authenticate", {"username": "alice", "password": "secret"})
+    assert r.status_code == 200
+    return r.json()["data"]["sessionToken"]
+
+
+def test_kados_authenticate_via_plugin_success(app_with_plugin):
+    """``authenticate`` delegates to plugin.authenticate first; only
+    falls back to env creds when the plugin returns
+    NotImplementedError. With the plugin returning True for any
+    creds, even mismatched ones succeed."""
+    client, plugin = app_with_plugin
+    plugin.authenticate_returns = True
+    r = _kados(client, "authenticate", {"username": "anyone", "password": "anything"})
+    assert r.status_code == 200
+    body = r.json()["data"]
+    assert body["authenticated"] is True
+    assert body["sessionToken"]
+
+
+def test_kados_authenticate_plugin_falls_back_when_not_implemented(app_with_plugin):
+    """Plugin doesn't implement authenticate -> falls through to the
+    env-credential check (alice/secret)."""
+    client, plugin = app_with_plugin
+    plugin.authenticate_returns = NotImplementedError
+    r = _kados(client, "authenticate", {"username": "alice", "password": "secret"})
+    assert r.json()["data"]["authenticated"] is True
+
+
+def test_kados_content_list_via_plugin(app_with_plugin):
+    client, plugin = app_with_plugin
+    plugin.list_bookshelf_returns = [
+        _book(42, "Moby Dick", [(4, "MP3", None)]),
+    ]
+    token = _login_kados(client)
+    r = _kados(
+        client, "contentList", {"list": "bookshelf"},
+        headers={"Authorization": f"Session {token}"},
+    )
+    body = r.json()["data"]
+    assert body["totalItems"] == 1
+    assert body["contentItem"][0]["id"] == "42"
+
+
+def test_kados_content_list_plugin_not_implemented_falls_back(app_with_plugin):
+    client, plugin = app_with_plugin
+    plugin.list_bookshelf_returns = NotImplementedError
+    token = _login_kados(client)
+    r = _kados(
+        client, "contentList", {"list": "bookshelf"},
+        headers={"Authorization": f"Session {token}"},
+    )
+    body = r.json()["data"]
+    # Default storage is empty.
+    assert body["totalItems"] == 0
+
+
+def test_kados_content_add_bookshelf_via_plugin(app_with_plugin):
+    client, plugin = app_with_plugin
+    plugin.add_to_bookshelf_returns = True
+    token = _login_kados(client)
+    r = _kados(
+        client, "contentAddBookshelf", {"contentId": 42},
+        headers={"Authorization": f"Session {token}"},
+    )
+    assert r.json()["data"] is True
+    assert plugin.calls[-1] == ("add_to_bookshelf", ("alice", 42))
+
+
+def test_kados_content_return_via_plugin(app_with_plugin):
+    client, plugin = app_with_plugin
+    plugin.remove_from_bookshelf_returns = True
+    token = _login_kados(client)
+    r = _kados(
+        client, "contentReturn", {"contentId": 42},
+        headers={"Authorization": f"Session {token}"},
+    )
+    assert r.json()["data"] is True
+    assert plugin.calls[-1] == ("remove_from_bookshelf", ("alice", 42))
+
+
+def test_kados_content_add_plugin_not_implemented_falls_back(app_with_plugin):
+    """Plugin raises NotImplementedError -> the kados handler falls
+    through to the JSON-backed default storage. Storage's
+    add_to_bookshelf returns True on a fresh shelf."""
+    client, plugin = app_with_plugin
+    plugin.add_to_bookshelf_returns = NotImplementedError
+    token = _login_kados(client)
+    r = _kados(
+        client, "contentAddBookshelf", {"contentId": 42},
+        headers={"Authorization": f"Session {token}"},
+    )
+    assert r.json()["data"] is True
+
+
+def test_kados_content_return_plugin_not_implemented_falls_back(app_with_plugin):
+    """Plugin -> NotImplementedError -> default storage path. Empty
+    shelf so storage.remove returns False."""
+    client, plugin = app_with_plugin
+    plugin.remove_from_bookshelf_returns = NotImplementedError
+    token = _login_kados(client)
+    r = _kados(
+        client, "contentReturn", {"contentId": 42},
+        headers={"Authorization": f"Session {token}"},
+    )
+    assert r.json()["data"] is False
+
+
+# ---------------------------------------------------------------------------
+# kados router error mapping that the existing suite didn't reach
+# ---------------------------------------------------------------------------
+
+
+def test_kados_router_propagates_httpexception_from_handler(app_with_plugin):
+    """A handler that raises HTTPException directly (eg. an
+    auth-style handler that wants to return a specific status code)
+    must NOT be repackaged as 500 — the router re-raises so the
+    handler's status code reaches the caller."""
+    import hummingbird.protocols.kados.methods as kd_methods
+    from fastapi import HTTPException
+
+    async def _http_raiser(data, user, **_):
+        raise HTTPException(status_code=418, detail="im a teapot")
+
+    client, _ = app_with_plugin
+    kd_methods._REGISTRY["_teapot"] = _http_raiser
+    try:
+        r = _kados(client, "_teapot")
+        assert r.status_code == 418
+        assert "teapot" in r.json()["detail"]
+    finally:
+        del kd_methods._REGISTRY["_teapot"]
+
+
+def test_kados_router_maps_notimplementederror_to_501(app_with_plugin):
+    """A handler that raises NotImplementedError (eg. a plugin
+    extension that hasn't been wired up yet) becomes a 501 with a
+    structured detail rather than a 500."""
+    import hummingbird.protocols.kados.methods as kd_methods
+
+    async def _ni(data, user, **_):
+        raise NotImplementedError("not yet")
+
+    client, _ = app_with_plugin
+    kd_methods._REGISTRY["_ni_method"] = _ni
+    try:
+        r = _kados(client, "_ni_method")
+        assert r.status_code == 501
+        assert "not yet" in r.json()["detail"]
+    finally:
+        del kd_methods._REGISTRY["_ni_method"]
+
+
+# ---------------------------------------------------------------------------
+# Small router gaps: _guess_mime extra mimes; download fetch 404
+# ---------------------------------------------------------------------------
+
+
+def test_guess_mime_uses_extra_mimes_table():
+    """``.brf`` / ``.epub`` / etc aren't in the stdlib mimetypes
+    table; the router's ``_EXTRA_MIMES`` dict supplies the
+    application-specific types."""
+    from hummingbird.protocols.hummingbird.router import _guess_mime
+
+    assert _guess_mime("foo.brf") == "application/x-brf"
+    assert _guess_mime("foo.epub") == "application/epub+zip"
+    assert _guess_mime("foo.smil") == "application/smil+xml"
+
+
+def test_flatten_to_items_skips_format_zero():
+    """Format id 0 is the "unknown" sentinel from formats.yaml;
+    it's not a real downloadable format, so the bookshelf list
+    skips it rather than emitting a broken download URL."""
+    from hummingbird.protocols.hummingbird.router import _flatten_to_items
+
+    book = _book(1, "X", [(0, "Unknown", None), (4, "MP3", None)])
+    items = _flatten_to_items([book], "https://x")
+    # Only the MP3 (id=4) entry — the id=0 dropped.
+    assert len(items) == 1
+    assert "MP3" in items[0].title
+
+
+def test_download_fetch_returns_404_for_missing_cache(app_with_plugin):
+    """Single-file branch of /download/{fmt}/{id}/{path} when the
+    cache is empty -> 404 before the path-vs-cache.name check."""
+    client, _ = app_with_plugin
+    r = client.get("/protocols/hummingbird/v1/download/4/9999/missing.mp3")
+    assert r.status_code == 404
