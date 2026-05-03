@@ -34,13 +34,13 @@ image on every `git tag v*`. Anonymous push to
 kibble, no secrets to configure.
 
 ```sh
-git tag -a v0.1.2 -m "Release 0.1.2"
-git push origin v0.1.2
+git tag -a v0.1.8 -m "Release 0.1.8"
+git push origin v0.1.8
 ```
 
 Within a couple of minutes:
 
-- `kibble.apps.blindhub.ca/cobdfamily/hummingbird:0.1.2`
+- `kibble.apps.blindhub.ca/cobdfamily/hummingbird:0.1.8`
 - `kibble.apps.blindhub.ca/cobdfamily/hummingbird:latest`
 
 ## Configure
@@ -50,10 +50,12 @@ The defaults in `src/hummingbird/config.py` cover dev.
 For production, override:
 
 ```sh
-# Built-in /login users (no plugin). Comma-separated
-# user:password pairs. With a plugin configured, this
-# is unused.
-HUMMINGBIRD_USERS=alice:hunter2,bob:passw0rd
+# Default-backend credentials. Used by /login when no
+# plugin is configured (single-tenant fallback). With a
+# plugin loaded, the plugin authenticates and these are
+# ignored.
+HUMMINGBIRD_USERNAME=alice
+HUMMINGBIRD_PASSWORD=hunter2
 
 # Where the JSON state lives. Default /app/data.
 HUMMINGBIRD_DATA_DIR=/app/data
@@ -61,8 +63,21 @@ HUMMINGBIRD_DATA_DIR=/app/data
 # Audio cache. Default /app/cache.
 HUMMINGBIRD_CACHE_DIR=/app/cache
 
-# Plugin name. Empty = no plugin (file-only mode).
+# Plugin entry-point name. Empty = standalone (no plugin).
 HUMMINGBIRD_PLUGIN=
+
+# Optional fallback for /download cache misses. When set,
+# missing files are proxied from
+#   {url}/{format-id}/{node-id}/  (directory index)
+# atomically into the cache, then served.
+HUMMINGBIRD_PUBLIC_CONTENT_URL=
+
+# Optional KADOS app-level key. When non-empty, every
+# /protocols/kados/v1/methods/* request must carry the
+# matching X-API-Key header. Per-user auth still happens
+# via the Authorization: Session <token> header issued
+# at authenticate-time.
+KADOS_API_KEY=
 ```
 
 Check `src/hummingbird/config.py` for the full list
@@ -75,13 +90,16 @@ Production-shaped `docker-compose.yml`:
 ```yaml
 services:
   hummingbird:
-    image: kibble.apps.blindhub.ca/cobdfamily/hummingbird:0.1.1
+    image: kibble.apps.blindhub.ca/cobdfamily/hummingbird:0.1.8
     container_name: hummingbird
     restart: unless-stopped
     ports:
       - "127.0.0.1:8000:8000"
     environment:
-      HUMMINGBIRD_USERS: ${HUMMINGBIRD_USERS}
+      HUMMINGBIRD_USERNAME: ${HUMMINGBIRD_USERNAME}
+      HUMMINGBIRD_PASSWORD: ${HUMMINGBIRD_PASSWORD}
+      HUMMINGBIRD_PUBLIC_CONTENT_URL: ${HUMMINGBIRD_PUBLIC_CONTENT_URL:-}
+      KADOS_API_KEY: ${KADOS_API_KEY:-}
     volumes:
       - ./data:/app/data
       - ./cache:/app/cache
@@ -104,14 +122,25 @@ Behind your TLS reverse proxy, route
 ## Verify
 
 ```sh
-# Hummingbird liveness
-curl -fsS \
-  https://library.cobd.ca/
+# Hummingbird liveness — returns the running version too:
+# {"service":"hummingbird","status":"ok","version":"0.1.8"}
+curl -fsS https://library.cobd.ca/
 
-# KADOS RPC surface (replace serviceAttributes with any
-# other read-only method)
+# Generated OpenAPI docs:
+#   https://library.cobd.ca/docs    (Swagger UI)
+#   https://library.cobd.ca/redocs  (ReDoc, trailing s)
+
+# REST surface (Hummingbird-native): list a bookshelf.
 curl -fsS \
-  https://library.cobd.ca/protocols/kados/v1/methods/serviceAttributes/
+  "https://library.cobd.ca/protocols/hummingbird/v1/bookshelf/list?username=alice"
+
+# KADOS RPC surface — every method is POST with a JSON
+# envelope {"method": "<name>", "data": {...}}.
+curl -fsS \
+  -X POST \
+  -H "Content-Type: application/json" \
+  -d '{"method":"contentListExists","data":{"list":"bookshelf"}}' \
+  https://library.cobd.ca/protocols/kados/v1/methods/contentListExists/
 ```
 
 ## Routine operations
@@ -119,12 +148,12 @@ curl -fsS \
 ### Upgrading
 
 ```sh
-git tag -a v0.1.2 -m "Release 0.1.2"
-git push origin v0.1.2
+git tag -a v0.1.9 -m "Release 0.1.9"
+git push origin v0.1.9
 # CI builds and pushes the image.
 
 # Deploy host:
-sed -i 's|hummingbird:[^ ]*|hummingbird:0.1.2|' docker-compose.yml
+sed -i 's|hummingbird:[^ ]*|hummingbird:0.1.9|' docker-compose.yml
 docker compose pull
 docker compose up -d --no-deps hummingbird
 ```
@@ -135,11 +164,14 @@ What must persist:
 
 - `data/` — bookshelves, sessions, bookmarks.
   Without this users lose their reading progress.
-- `.env` if you're using `HUMMINGBIRD_USERS` for
-  password storage. Treat as a secret.
+- `.env` (or your secret store) for the
+  `HUMMINGBIRD_PASSWORD` and `KADOS_API_KEY` values.
+  Treat as a secret.
 
 Safe to lose:
 
-- `cache/` — audio cache. Re-derives from source on
-  next request. Saves bandwidth, not correctness.
+- `cache/` — audio cache. Re-derives from
+  `HUMMINGBIRD_PUBLIC_CONTENT_URL` (or the active
+  plugin) on next request. Saves bandwidth, not
+  correctness.
 - Container logs (ship them to your aggregator).
