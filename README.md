@@ -2,8 +2,9 @@
 
 [![test](https://github.com/cobdfamily/hummingbird/actions/workflows/test.yml/badge.svg)](https://github.com/cobdfamily/hummingbird/actions/workflows/test.yml)
 
-HTTP server for accessible-library workflows with a small plugin
-surface and a Kados-compatible RPC endpoint.
+HTTP server for accessible-library workflows with a Hummingbird
+v1 REST surface, a Kolibre KADOS-compatible RPC endpoint, and a
+plugin architecture via entry points.
 
 > Deploying hummingbird in production? See **[DEPLOYMENT.md](DEPLOYMENT.md)**
 > for the full checklist (image pull from the kibble registry,
