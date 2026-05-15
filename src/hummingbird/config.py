@@ -1,3 +1,16 @@
+"""Runtime configuration for hummingbird.
+
+pydantic-settings reads HUMMINGBIRD_* environment
+variables (and an optional .env file) into a typed
+Settings object that the rest of the app consumes via
+the module-level `settings` singleton.
+
+One file, one source of truth -- every operator-
+controllable knob (TTS engine, KADOS realm, plugin
+registration) shows up here; the test suite swaps
+env vars rather than reaching into nested dicts.
+"""
+
 from pathlib import Path
 
 from pydantic import Field

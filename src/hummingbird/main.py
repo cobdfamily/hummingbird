@@ -1,3 +1,21 @@
+"""hummingbird FastAPI app.
+
+Mounts two protocol surfaces against the same plugin
+registry:
+
+  Hummingbird v1 REST -- the modern shape
+                         (/v1/books, /v1/sources, ...)
+  KADOS RPC           -- Kolibre-compatible SOAP-ish
+                         endpoint for DAISY clients
+
+Both routers consume the same underlying source + TTS
+plugins, so a new content source surfaces on both
+protocols simultaneously. The plugin system discovers
+entry points at import time -- see the two
+protocols/.../router.py modules for how each side
+reaches the shared registry.
+"""
+
 import uvicorn
 from fastapi import FastAPI
 
