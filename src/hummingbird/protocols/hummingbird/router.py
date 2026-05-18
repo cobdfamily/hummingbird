@@ -12,6 +12,7 @@ import zipfile
 from pathlib import Path
 from typing import Annotated
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
@@ -397,6 +398,13 @@ async def search_endpoint(
             result: SearchResult = await plugin.search(user, q, formats, page)
         except NotImplementedError:
             result = SearchResult(query=q, page=page, books=[])
+        except (httpx.ReadTimeout, httpx.ConnectTimeout, httpx.PoolTimeout) as e:
+            # NNELS is intermittently very slow; surface as 504 so clients
+            # know to retry instead of treating it as a server crash (500).
+            raise HTTPException(
+                504,
+                "upstream library is responding slowly; please retry in a moment",
+            ) from e
     else:
         result = SearchResult(query=q, page=page, books=[])
 

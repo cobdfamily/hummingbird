@@ -1,6 +1,6 @@
 [project]
 name = "hummingbird"
-version = "0.4.1"
+version = "0.4.2"
 description = "HTTP server for accessible-library workflows with a Hummingbird v1 REST surface, a Kolibre KADOS-compatible RPC endpoint, and a plugin architecture via entry points."
 readme = "README.md"
 license = "AGPL-3.0"
