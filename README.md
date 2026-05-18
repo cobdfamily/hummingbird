@@ -24,7 +24,7 @@ in JSON files on disk, sessions live in JSON files on disk, `/login`
 checks credentials from `.env`, `/search` returns an empty list, and
 `/download` serves from a public HTTP source if one is configured.
 
-A plugin can override exactly five hooks:
+A plugin can override exactly seven hooks:
 
 ```python
 class Plugin:
@@ -33,7 +33,16 @@ class Plugin:
     async def add_to_bookshelf(self, username, node_id) -> bool: ...
     async def remove_from_bookshelf(self, username, node_id) -> bool: ...
     async def search(self, username, query, formats, page) -> SearchResult: ...
+    async def set_bookmark(self, username, content_id, bookmark) -> bool: ...
+    async def get_bookmark(self, username, content_id) -> dict: ...
 ```
+
+Every hook is optional — a plugin may `raise NotImplementedError`
+from any hook to defer to the default storage backend. The
+bookmark hooks in particular are a good candidate for deferral
+when the underlying library has no upstream bookmark API:
+return `NotImplementedError` and hummingbird's JSON storage
+provides cross-device sync for free.
 
 Plugins are discovered via the `hummingbird.plugins` entry-point
 group. In a plugin's `pyproject.toml`:
@@ -81,7 +90,7 @@ uv run pytest -q
 uv run pytest --cov   # with branch coverage
 ```
 
-Coverage gate is set at 85%.
+Coverage gate is set at 92%.
 
 ## Routes
 
@@ -90,12 +99,20 @@ POST  /protocols/hummingbird/v1/login
 GET   /protocols/hummingbird/v1/bookshelf/list
 POST  /protocols/hummingbird/v1/bookshelf/add/{id}
 POST  /protocols/hummingbird/v1/bookshelf/remove/{id}
+GET   /protocols/hummingbird/v1/bookshelf/bookmark/{id}
+POST  /protocols/hummingbird/v1/bookshelf/bookmark/{id}
 GET   /protocols/hummingbird/v1/search?q=...&formats=1&formats=2&page=0
 GET   /protocols/hummingbird/v1/download/{format}/{id}/
 GET   /protocols/hummingbird/v1/download/{format}/{id}/{path:path}
 
 POST  /protocols/kados/v1/methods/{name}/
 ```
+
+Bookmark payload is opaque JSON — store any shape (DODP-style
+``{"position": "smil-1#p3"}``, BookPlayer-style
+``{"currentTime": 12.5, "duration": 60.0, "isFinished": false}``,
+or anything in between). Storage stamps a server-side
+``updated_at`` on write.
 
 Kados payload envelope:
 

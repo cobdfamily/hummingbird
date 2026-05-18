@@ -107,3 +107,55 @@ def test_clear_session_idempotent_when_no_file(storage):
     even if the session was already evicted."""
     # Should not raise.
     storage.clear_session("never-logged-in")
+
+
+# ---------------------------------------------------------------------------
+# bookmarks
+# ---------------------------------------------------------------------------
+
+
+def test_read_bookmark_empty_when_no_file(storage):
+    assert storage.read_bookmark("alice", 42) == {}
+
+
+def test_write_then_read_bookmark_roundtrips(storage):
+    ok = storage.write_bookmark("alice", 42, {"currentTime": 12.5, "duration": 60.0})
+    assert ok is True
+    bookmark = storage.read_bookmark("alice", 42)
+    assert bookmark["currentTime"] == 12.5
+    assert bookmark["duration"] == 60.0
+    assert "updated_at" in bookmark
+
+
+def test_write_bookmark_overwrites_prior_value(storage):
+    storage.write_bookmark("alice", 42, {"currentTime": 1.0})
+    storage.write_bookmark("alice", 42, {"currentTime": 99.0})
+    assert storage.read_bookmark("alice", 42)["currentTime"] == 99.0
+
+
+def test_write_bookmark_empty_payload(storage):
+    """A None / empty bookmark still creates a file with just the
+    timestamp -- useful for "I started the book but no progress yet"."""
+    ok = storage.write_bookmark("alice", 42, {})
+    assert ok is True
+    bookmark = storage.read_bookmark("alice", 42)
+    assert list(bookmark.keys()) == ["updated_at"]
+
+
+def test_clear_bookmark_removes_file(storage):
+    storage.write_bookmark("alice", 42, {"currentTime": 1.0})
+    assert storage.clear_bookmark("alice", 42) is True
+    assert storage.read_bookmark("alice", 42) == {}
+
+
+def test_clear_bookmark_returns_false_when_no_file(storage):
+    assert storage.clear_bookmark("alice", 999) is False
+
+
+def test_bookmarks_isolated_per_user_and_per_content(storage):
+    storage.write_bookmark("alice", 42, {"currentTime": 1.0})
+    storage.write_bookmark("alice", 43, {"currentTime": 2.0})
+    storage.write_bookmark("bob", 42, {"currentTime": 3.0})
+    assert storage.read_bookmark("alice", 42)["currentTime"] == 1.0
+    assert storage.read_bookmark("alice", 43)["currentTime"] == 2.0
+    assert storage.read_bookmark("bob", 42)["currentTime"] == 3.0

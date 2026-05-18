@@ -1,8 +1,9 @@
-"""JSON-backed default storage for bookshelves and sessions.
+"""JSON-backed default storage for bookshelves, sessions, and bookmarks.
 
 Files:
-  {data_dir}/bookshelves/{username}.json   -> list of stored-shelf entries
-  {data_dir}/sessions/{username}.json      -> session record
+  {data_dir}/bookshelves/{username}.json          -> list of stored-shelf entries
+  {data_dir}/sessions/{username}.json             -> session record
+  {data_dir}/bookmarks/{username}/{cid}.json      -> opaque bookmark JSON
 
 Shelf entry shape:
   {"id": int, "format": int, "title": str, "added_at": ISO-8601 UTC}
@@ -30,6 +31,10 @@ def _shelf_path(username: str) -> Path:
 
 def _session_path(username: str) -> Path:
     return settings.data_dir / "sessions" / f"{username}.json"
+
+
+def _bookmark_path(username: str, content_id: int | str) -> Path:
+    return settings.data_dir / "bookmarks" / username / f"{content_id}.json"
 
 
 # ---------- bookshelf ----------------------------------------------------
@@ -119,3 +124,33 @@ def clear_session(username: str) -> None:
     path = _session_path(username)
     if path.exists():
         path.unlink()
+
+
+# ---------- bookmarks -----------------------------------------------------
+
+
+def write_bookmark(username: str, content_id: int | str, bookmark: dict) -> bool:
+    """Persist an opaque bookmark dict. Overwrites any prior value."""
+    path = _bookmark_path(username, content_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = dict(bookmark or {})
+    payload["updated_at"] = _utc_now()
+    path.write_text(json.dumps(payload, indent=2) + "\n")
+    return True
+
+
+def read_bookmark(username: str, content_id: int | str) -> dict:
+    """Return the stored bookmark dict, or ``{}`` if none."""
+    path = _bookmark_path(username, content_id)
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text())
+
+
+def clear_bookmark(username: str, content_id: int | str) -> bool:
+    """Drop a stored bookmark. Returns False if there was nothing to drop."""
+    path = _bookmark_path(username, content_id)
+    if not path.exists():
+        return False
+    path.unlink()
+    return True

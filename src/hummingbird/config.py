@@ -46,6 +46,7 @@ settings.data_dir.mkdir(parents=True, exist_ok=True)
 settings.cache_dir.mkdir(parents=True, exist_ok=True)
 (settings.data_dir / "bookshelves").mkdir(parents=True, exist_ok=True)
 (settings.data_dir / "sessions").mkdir(parents=True, exist_ok=True)
+(settings.data_dir / "bookmarks").mkdir(parents=True, exist_ok=True)
 
 
 class KadosSettings(BaseSettings):

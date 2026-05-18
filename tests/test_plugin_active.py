@@ -40,6 +40,8 @@ class FakePlugin(Plugin):
         self.search_returns: SearchResult | type = SearchResult(
             query="", page=0, books=[],
         )
+        self.set_bookmark_returns: bool | type = True
+        self.get_bookmark_returns: dict | type = {}
         self.calls: list[tuple[str, tuple]] = []
 
     @staticmethod
@@ -67,6 +69,14 @@ class FakePlugin(Plugin):
     async def search(self, username, query, formats, page):
         self.calls.append(("search", (username, query, formats, page)))
         return self._maybe_raise(self.search_returns)
+
+    async def set_bookmark(self, username, content_id, bookmark):
+        self.calls.append(("set_bookmark", (username, content_id, bookmark)))
+        return self._maybe_raise(self.set_bookmark_returns)
+
+    async def get_bookmark(self, username, content_id):
+        self.calls.append(("get_bookmark", (username, content_id)))
+        return self._maybe_raise(self.get_bookmark_returns)
 
 
 # ---------------------------------------------------------------------------
@@ -459,6 +469,111 @@ def test_kados_router_maps_notimplementederror_to_501(app_with_plugin):
         assert "not yet" in r.json()["detail"]
     finally:
         del kd_methods._REGISTRY["_ni_method"]
+
+
+# ---------------------------------------------------------------------------
+# /bookshelf/bookmark — plugin-active branches (REST + kados)
+# ---------------------------------------------------------------------------
+
+
+def test_rest_bookmark_set_via_plugin(app_with_plugin):
+    client, plugin = app_with_plugin
+    plugin.set_bookmark_returns = True
+    r = client.post(
+        "/protocols/hummingbird/v1/bookshelf/bookmark/42?username=u",
+        json={"bookmark": {"currentTime": 12.5}},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["success"] is True
+    assert body["action"] == "set"
+    assert plugin.calls[-1] == (
+        "set_bookmark", ("u", 42, {"currentTime": 12.5})
+    )
+
+
+def test_rest_bookmark_set_plugin_not_implemented_falls_through(app_with_plugin):
+    """Plugin -> NotImplementedError -> default storage path. The
+    bookmark then round-trips through GET against the same storage."""
+    client, plugin = app_with_plugin
+    plugin.set_bookmark_returns = NotImplementedError
+    plugin.get_bookmark_returns = NotImplementedError
+    r = client.post(
+        "/protocols/hummingbird/v1/bookshelf/bookmark/42?username=u",
+        json={"bookmark": {"currentTime": 9.0}},
+    )
+    assert r.status_code == 200
+    assert r.json()["success"] is True
+    r = client.get("/protocols/hummingbird/v1/bookshelf/bookmark/42?username=u")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["bookmark"]["currentTime"] == 9.0
+    # Storage stamps updated_at on write.
+    assert "updated_at" in body["bookmark"]
+
+
+def test_rest_bookmark_get_via_plugin(app_with_plugin):
+    client, plugin = app_with_plugin
+    plugin.get_bookmark_returns = {"position": "smil-1#p3"}
+    r = client.get("/protocols/hummingbird/v1/bookshelf/bookmark/42?username=u")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["bookmark"] == {"position": "smil-1#p3"}
+    assert plugin.calls[-1] == ("get_bookmark", ("u", 42))
+
+
+def test_rest_bookmark_get_plugin_returns_none_normalizes_to_empty(app_with_plugin):
+    """A plugin returning None must surface as ``{}`` in the response."""
+    client, plugin = app_with_plugin
+    plugin.get_bookmark_returns = None
+    r = client.get("/protocols/hummingbird/v1/bookshelf/bookmark/42?username=u")
+    assert r.json()["bookmark"] == {}
+
+
+def test_kados_set_bookmarks_via_plugin(app_with_plugin):
+    client, plugin = app_with_plugin
+    plugin.set_bookmark_returns = True
+    token = _login_kados(client)
+    r = _kados(
+        client, "setBookmarks",
+        {"contentId": 42, "bookmark": {"position": "smil-1#p3"}},
+        headers={"Authorization": f"Session {token}"},
+    )
+    assert r.json()["data"] is True
+    assert plugin.calls[-1] == (
+        "set_bookmark", ("alice", "42", {"position": "smil-1#p3"})
+    )
+
+
+def test_kados_set_bookmarks_plugin_not_implemented_falls_back(app_with_plugin):
+    """Plugin -> NotImplementedError -> storage. setBookmarks then
+    getBookmarks round-trips through the JSON-backed default."""
+    client, plugin = app_with_plugin
+    plugin.set_bookmark_returns = NotImplementedError
+    plugin.get_bookmark_returns = NotImplementedError
+    token = _login_kados(client)
+    r = _kados(
+        client, "setBookmarks",
+        {"contentId": 42, "bookmark": {"position": "smil-9#x"}},
+        headers={"Authorization": f"Session {token}"},
+    )
+    assert r.json()["data"] is True
+    r = _kados(
+        client, "getBookmarks", {"contentId": 42},
+        headers={"Authorization": f"Session {token}"},
+    )
+    assert r.json()["data"]["position"] == "smil-9#x"
+
+
+def test_kados_get_bookmarks_via_plugin(app_with_plugin):
+    client, plugin = app_with_plugin
+    plugin.get_bookmark_returns = {"position": "smil-1#p3"}
+    token = _login_kados(client)
+    r = _kados(
+        client, "getBookmarks", {"contentId": 42},
+        headers={"Authorization": f"Session {token}"},
+    )
+    assert r.json()["data"] == {"position": "smil-1#p3"}
 
 
 # ---------------------------------------------------------------------------

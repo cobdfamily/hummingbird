@@ -52,6 +52,23 @@ class ShelfActionResponse(BaseModel):
     success: bool
 
 
+class BookmarkRequest(BaseModel):
+    bookmark: dict = {}
+
+
+class BookmarkResponse(BaseModel):
+    username: str
+    node_id: int
+    bookmark: dict
+
+
+class BookmarkActionResponse(BaseModel):
+    username: str
+    node_id: int
+    action: str  # "set" or "clear"
+    success: bool
+
+
 class SearchResponse(BaseModel):
     username: str
     query: str
@@ -217,6 +234,62 @@ async def bookshelf_remove(
             pass
     ok = storage.remove_from_bookshelf(user, node_id, format=format)
     return ShelfActionResponse(username=user, node_id=node_id, action="remove", success=ok)
+
+
+# ---------- /bookshelf/bookmark -------------------------------------------
+#
+# Bookmark / progress-sync surface. The payload is treated as opaque --
+# DODP-style bookmarks have a ``position`` field, BookPlayer-style ones
+# carry ``currentTime`` / ``duration`` / ``isFinished``. The storage
+# layer round-trips whatever shape the client sent, and the plugin layer
+# can override (sync upstream) or defer (raise NotImplementedError) to
+# the JSON-backed default storage.
+
+
+@router.get(
+    "/bookshelf/bookmark/{node_id}", response_model=BookmarkResponse
+)
+async def bookmark_get(
+    node_id: int,
+    username: Annotated[str | None, Query()] = None,
+) -> BookmarkResponse:
+    user = _require_username(username)
+    plugin = active_plugin()
+    if plugin is not None:
+        try:
+            bookmark = await plugin.get_bookmark(user, node_id)
+            return BookmarkResponse(
+                username=user, node_id=node_id, bookmark=bookmark or {}
+            )
+        except NotImplementedError:
+            pass
+    return BookmarkResponse(
+        username=user, node_id=node_id, bookmark=storage.read_bookmark(user, node_id)
+    )
+
+
+@router.post(
+    "/bookshelf/bookmark/{node_id}", response_model=BookmarkActionResponse
+)
+async def bookmark_set(
+    node_id: int,
+    payload: BookmarkRequest,
+    username: Annotated[str | None, Query()] = None,
+) -> BookmarkActionResponse:
+    user = _require_username(username)
+    plugin = active_plugin()
+    if plugin is not None:
+        try:
+            ok = await plugin.set_bookmark(user, node_id, payload.bookmark or {})
+            return BookmarkActionResponse(
+                username=user, node_id=node_id, action="set", success=ok
+            )
+        except NotImplementedError:
+            pass
+    ok = storage.write_bookmark(user, node_id, payload.bookmark or {})
+    return BookmarkActionResponse(
+        username=user, node_id=node_id, action="set", success=ok
+    )
 
 
 # ---------- /search -------------------------------------------------------

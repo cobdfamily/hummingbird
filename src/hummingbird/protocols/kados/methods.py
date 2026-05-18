@@ -11,7 +11,6 @@ else is stubbed.
 
 from __future__ import annotations
 
-import json
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -215,13 +214,9 @@ async def _terms_of_service_accepted(data: dict, user: str | None, **_) -> bool:
 
 
 # Bookmarks: stored per-user under data_dir/bookmarks/{user}/{contentId}.json
-# Simple JSON blob — protocol treats the payload as opaque.
-
-
-def _bookmarks_dir(user: str):
-    d = settings.data_dir / "bookmarks" / user
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+# Simple JSON blob — protocol treats the payload as opaque. Plugins
+# with an upstream sync API can override via set_bookmark / get_bookmark;
+# raising NotImplementedError falls back to the JSON storage layer.
 
 
 @method("setBookmarks")
@@ -231,9 +226,14 @@ async def _set_bookmarks(data: dict, user: str | None, **_) -> bool:
     cid = str(data.get("contentId", ""))
     if not cid:
         return False
-    path = _bookmarks_dir(user) / f"{cid}.json"
-    path.write_text(json.dumps(data.get("bookmark") or {}, indent=2))
-    return True
+    bookmark = data.get("bookmark") or {}
+    plugin = active_plugin()
+    if plugin is not None:
+        try:
+            return bool(await plugin.set_bookmark(user, cid, bookmark))
+        except NotImplementedError:
+            pass
+    return storage.write_bookmark(user, cid, bookmark)
 
 
 @method("getBookmarks")
@@ -243,10 +243,13 @@ async def _get_bookmarks(data: dict, user: str | None, **_) -> dict:
     cid = str(data.get("contentId", ""))
     if not cid:
         return {}
-    path = _bookmarks_dir(user) / f"{cid}.json"
-    if not path.exists():
-        return {}
-    return json.loads(path.read_text())
+    plugin = active_plugin()
+    if plugin is not None:
+        try:
+            return await plugin.get_bookmark(user, cid) or {}
+        except NotImplementedError:
+            pass
+    return storage.read_bookmark(user, cid)
 
 
 # ==========================================================================

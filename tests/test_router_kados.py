@@ -417,7 +417,10 @@ def test_set_and_get_bookmarks_roundtrip(client):
     assert r.json()["data"] is True
 
     r = _call(client, "getBookmarks", {"contentId": 42}, headers=h)
-    assert r.json()["data"] == {"position": "smil-1#p3"}
+    body = r.json()["data"]
+    assert body["position"] == "smil-1#p3"
+    # Storage stamps a server-side write timestamp.
+    assert "updated_at" in body
 
 
 def test_set_bookmarks_anon_false(client):

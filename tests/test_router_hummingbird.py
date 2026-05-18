@@ -163,6 +163,64 @@ def test_bookshelf_400_when_no_username_anywhere(client, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# /bookshelf/bookmark (standalone, no plugin -> file-backed storage)
+# ---------------------------------------------------------------------------
+
+
+def test_bookmark_get_empty_when_unset(client):
+    r = client.get("/protocols/hummingbird/v1/bookshelf/bookmark/42?username=alice")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["bookmark"] == {}
+    assert body["node_id"] == 42
+    assert body["username"] == "alice"
+
+
+def test_bookmark_set_then_get_roundtrips(client):
+    r = client.post(
+        "/protocols/hummingbird/v1/bookshelf/bookmark/42?username=alice",
+        json={"bookmark": {"currentTime": 12.5, "duration": 60.0, "isFinished": False}},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["success"] is True
+    assert body["action"] == "set"
+
+    r = client.get("/protocols/hummingbird/v1/bookshelf/bookmark/42?username=alice")
+    bookmark = r.json()["bookmark"]
+    assert bookmark["currentTime"] == 12.5
+    assert bookmark["duration"] == 60.0
+    assert bookmark["isFinished"] is False
+
+
+def test_bookmark_set_with_no_payload_field_still_persists(client):
+    """Body without ``bookmark`` field treated as empty -- useful so the
+    client can stamp "opened" without a position yet."""
+    r = client.post(
+        "/protocols/hummingbird/v1/bookshelf/bookmark/42?username=alice",
+        json={},
+    )
+    assert r.status_code == 200
+    assert r.json()["success"] is True
+
+
+def test_bookmark_set_400_when_no_username_anywhere(client, monkeypatch):
+    monkeypatch.delenv("HUMMINGBIRD_USERNAME", raising=False)
+    import hummingbird.config as config
+    import hummingbird.protocols.hummingbird.router as hb_router
+    importlib.reload(config)
+    importlib.reload(hb_router)
+    import hummingbird.main as main
+    importlib.reload(main)
+    fresh = TestClient(main.app)
+    r = fresh.post(
+        "/protocols/hummingbird/v1/bookshelf/bookmark/42",
+        json={"bookmark": {"currentTime": 1.0}},
+    )
+    assert r.status_code == 400
+
+
+# ---------------------------------------------------------------------------
 # /search
 # ---------------------------------------------------------------------------
 

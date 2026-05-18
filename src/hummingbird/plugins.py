@@ -46,6 +46,24 @@ class Plugin(ABC):
     ) -> SearchResult:
         ...
 
+    @abstractmethod
+    async def set_bookmark(
+        self, username: str, content_id: int, bookmark: dict
+    ) -> bool:
+        """Persist a bookmark/progress payload. The ``bookmark`` dict is
+        treated as opaque -- DODP names like ``position`` are the
+        convention but the storage layer round-trips whatever shape
+        the caller sent. Plugins without an upstream sync API can
+        ``raise NotImplementedError`` to defer to local file storage."""
+        ...
+
+    @abstractmethod
+    async def get_bookmark(self, username: str, content_id: int) -> dict:
+        """Return the stored bookmark dict, or ``{}`` if no bookmark
+        is set. ``raise NotImplementedError`` to defer to local
+        file storage."""
+        ...
+
 
 _active: Plugin | None = None
 _loaded = False
