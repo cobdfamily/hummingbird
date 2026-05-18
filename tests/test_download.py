@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 
 import httpx
@@ -391,3 +392,96 @@ def test_prune_cache_removes_empty_dirs(download, tmp_path):
 def test_prune_cache_handles_missing_cache_dir(download, tmp_path, monkeypatch):
     monkeypatch.setattr(download.settings, "cache_dir", tmp_path / "does-not-exist")
     assert download.prune_cache(max_age_days=30) == 0
+
+
+# ---------------------------------------------------------------------------
+# ensure_cached_or_prefetch -- DODP-clean async path used by /resources and
+# /download. Cold cache + plugin loaded -> 503-shaped PREPARING; cache hit ->
+# READY; no-plugin standalone -> sync MISSING (no PREPARING-then-poll churn).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_or_prefetch_returns_ready_when_already_cached(download, tmp_path):
+    f = download.cache_dir_for(4, 7700) / "song.mp3"
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_bytes(b"AUDIO")
+
+    result = await download.ensure_cached_or_prefetch(4, 7700, username="alice")
+    assert result.state == download.CacheState.READY
+    assert result.path == f
+
+
+@pytest.mark.asyncio
+async def test_or_prefetch_standalone_no_plugin_returns_missing_sync(
+    download, tmp_path
+):
+    """No plugin loaded + no public source -> MISSING immediately (no
+    async task, no PREPARING). This is the standalone-mode path; we
+    don't want clients seeing 503-Retry-After for a permanently-missing
+    file."""
+    result = await download.ensure_cached_or_prefetch(4, 7701, username="alice")
+    assert result.state == download.CacheState.MISSING
+
+
+@pytest.mark.asyncio
+async def test_or_prefetch_anonymous_returns_missing_sync(download, tmp_path):
+    """No username -> no plugin invocation (defence in depth). Returns
+    MISSING immediately."""
+    result = await download.ensure_cached_or_prefetch(4, 7702)
+    assert result.state == download.CacheState.MISSING
+
+
+@pytest.mark.asyncio
+async def test_or_prefetch_kicks_off_task_when_plugin_loaded(
+    download, tmp_path, monkeypatch
+):
+    """Cold cache + plugin loaded -> PREPARING (task in flight). The
+    next call after the task completes sees READY. This is the DODP-
+    clean async pattern that lets the client return immediately rather
+    than holding open a multi-second connection."""
+    written = download.cache_dir_for(4, 7703) / "book.mp3"
+
+    class _Plugin:
+        async def download(self, username, fmt, node_id, cache_dir):
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            f = cache_dir / "book.mp3"
+            f.write_bytes(b"AUDIO")
+            return f
+
+    import hummingbird.plugins as plugins
+    monkeypatch.setattr(plugins, "_active", _Plugin())
+    monkeypatch.setattr(plugins, "_loaded", True)
+
+    # First call: task gets scheduled, hasn't run yet -> PREPARING.
+    first = await download.ensure_cached_or_prefetch(4, 7703, username="alice")
+    assert first.state == download.CacheState.PREPARING
+    # Yield so the task can actually run.
+    await asyncio.sleep(0)
+    # Second call: task done, file in cache -> READY.
+    second = await download.ensure_cached_or_prefetch(4, 7703, username="alice")
+    assert second.state == download.CacheState.READY
+    assert second.path == written
+
+
+@pytest.mark.asyncio
+async def test_or_prefetch_failed_when_plugin_returns_none(
+    download, tmp_path, monkeypatch
+):
+    """Plugin completes the task but returns None (couldn't fetch the
+    file). The next call sees MISSING -> route returns 404. The
+    in-flight dict gets cleaned up so a subsequent retry starts a
+    fresh task."""
+
+    class _Plugin:
+        async def download(self, username, fmt, node_id, cache_dir):
+            return None
+
+    import hummingbird.plugins as plugins
+    monkeypatch.setattr(plugins, "_active", _Plugin())
+    monkeypatch.setattr(plugins, "_loaded", True)
+
+    await download.ensure_cached_or_prefetch(4, 7704, username="alice")
+    await asyncio.sleep(0)
+    result = await download.ensure_cached_or_prefetch(4, 7704, username="alice")
+    assert result.state == download.CacheState.MISSING

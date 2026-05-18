@@ -18,6 +18,9 @@ forever.
 
 from __future__ import annotations
 
+import asyncio
+import dataclasses
+import enum
 import logging
 import re
 import time
@@ -152,6 +155,125 @@ def list_resources(cache_path: Path, fmt: int, node_id: int, base_url: str) -> l
             "localURI": cache_path.name,
         })
     return out
+
+
+class CacheState(enum.Enum):
+    """Result state of ``ensure_cached_or_prefetch``. Routes use this to
+    decide between serving the file (READY), responding 503 +
+    Retry-After (PREPARING), or 404 (MISSING / FAILED)."""
+
+    READY = "ready"
+    PREPARING = "preparing"
+    MISSING = "missing"
+    FAILED = "failed"
+
+
+@dataclasses.dataclass
+class CacheResult:
+    state: CacheState
+    path: Path | None = None
+    error: str | None = None
+
+
+# (username, fmt, node_id) -> asyncio.Task that's pulling the file from
+# the plugin's upstream into the cache. Tracked process-globally so a
+# request that comes in while a prefetch is mid-flight observes the
+# in-progress task rather than triggering a duplicate fetch. Cleared
+# when the task completes and a follow-up request consumes the result.
+_INFLIGHT: dict[tuple[str, int, int], asyncio.Task] = {}
+_INFLIGHT_LOCK = asyncio.Lock()
+
+
+async def _run_plugin_prefetch(
+    username: str, fmt: int, node_id: int
+) -> Path | None:
+    """Background-task body for a plugin-driven prefetch. Returns the
+    cached path on success, None on failure (logged + swallowed)."""
+    # Lazy import: ``plugins`` imports from us at module init time.
+    from .plugins import active_plugin
+
+    plugin = active_plugin()
+    if plugin is None:
+        return await fetch_from_public_source(fmt, node_id)
+    try:
+        return await plugin.download(
+            username, fmt, node_id, cache_dir_for(fmt, node_id)
+        )
+    except NotImplementedError:
+        return await fetch_from_public_source(fmt, node_id)
+    except Exception:
+        logger.exception(
+            "plugin prefetch failed for fmt=%s node_id=%s (user=%s)",
+            fmt, node_id, username,
+        )
+        return None
+
+
+async def ensure_cached_or_prefetch(
+    fmt: int, node_id: int, *, username: str | None = None
+) -> CacheResult:
+    """Cache-or-async-prefetch variant of ``ensure_cached``.
+
+    DODP-clean async pattern: routes call this, get back one of four
+    states, and respond accordingly. Used by ``/resources`` and
+    ``/download`` so a cold-cache request returns 503 + Retry-After
+    immediately instead of holding the client connection open for
+    20+s while the plugin pulls a multi-hundred-MB DAISY archive
+    from S3.
+
+    - READY: file is in the cache, ``path`` is set, route serves it.
+    - PREPARING: a prefetch task is in flight; route returns 503 +
+      ``Retry-After``. The task continues in the background.
+    - MISSING: no plugin, no public source, no cached file.
+    - FAILED: prefetch task ran and explicitly returned None.
+    """
+    existing = find_cached_file(fmt, node_id)
+    if existing is not None:
+        return CacheResult(state=CacheState.READY, path=existing)
+
+    if not username:
+        # Anonymous: try the public-source fallback only (matches the
+        # old ensure_cached anon path). No plugin invocation.
+        public = await fetch_from_public_source(fmt, node_id)
+        if public is not None:
+            return CacheResult(state=CacheState.READY, path=public)
+        return CacheResult(state=CacheState.MISSING)
+
+    # Lazy import to avoid a circular dep at module init.
+    from .plugins import active_plugin as _active_plugin
+
+    if _active_plugin() is None:
+        # Standalone mode (no plugin). Skip the async-task machinery and
+        # just try the public-source fallback synchronously -- matches
+        # the old ensure_cached behavior for this code path, so
+        # standalone-mode clients don't get 503/Retry-After replies for
+        # what's effectively a "nothing here" answer.
+        public = await fetch_from_public_source(fmt, node_id)
+        if public is not None:
+            return CacheResult(state=CacheState.READY, path=public)
+        return CacheResult(state=CacheState.MISSING)
+
+    key = (username, fmt, node_id)
+    async with _INFLIGHT_LOCK:
+        task = _INFLIGHT.get(key)
+        if task is None:
+            task = asyncio.create_task(_run_plugin_prefetch(username, fmt, node_id))
+            _INFLIGHT[key] = task
+
+    if not task.done():
+        return CacheResult(state=CacheState.PREPARING)
+
+    # Task completed; drain it and clean up so a subsequent request
+    # either serves from cache (READY) or kicks off a new prefetch
+    # (e.g. cache was pruned in the meantime).
+    async with _INFLIGHT_LOCK:
+        _INFLIGHT.pop(key, None)
+    if task.cancelled() or task.exception() is not None:
+        return CacheResult(state=CacheState.FAILED, error="prefetch failed")
+    result = task.result()
+    if isinstance(result, Path):
+        return CacheResult(state=CacheState.READY, path=result)
+    return CacheResult(state=CacheState.MISSING)
 
 
 async def ensure_cached(

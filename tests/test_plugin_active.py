@@ -661,9 +661,19 @@ def test_flatten_to_items_skips_format_zero():
     assert "MP3" in items[0].title
 
 
-def test_download_fetch_returns_404_for_missing_cache(app_with_plugin):
-    """Single-file branch of /download/{fmt}/{id}/{path} when the
-    cache is empty -> 404 before the path-vs-cache.name check."""
+def test_download_fetch_returns_503_then_404_for_missing_cache(app_with_plugin):
+    """With a plugin loaded, cold-cache requests kick off an async
+    prefetch and return 503 + Retry-After immediately. Once the
+    prefetch task completes (the FakePlugin's download_returns
+    defaults to NotImplementedError -> falls through to public-source
+    which is unconfigured -> task completes with None), a subsequent
+    poll sees MISSING and returns 404."""
     client, _ = app_with_plugin
+    r = client.get("/protocols/hummingbird/v1/download/4/9999/missing.mp3")
+    assert r.status_code == 503
+    assert r.headers.get("Retry-After") == "10"
+    # Allow the in-flight task a moment to drain.
+    import time as _time
+    _time.sleep(0.1)
     r = client.get("/protocols/hummingbird/v1/download/4/9999/missing.mp3")
     assert r.status_code == 404

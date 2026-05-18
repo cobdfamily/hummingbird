@@ -16,12 +16,39 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
+from fastapi.responses import JSONResponse
+
 from ... import auth as auth_module
 from ... import storage
 from ...config import settings
-from ...download import ensure_cached, list_resources
+from ...download import (
+    CacheState,
+    ensure_cached,
+    ensure_cached_or_prefetch,
+    list_resources,
+)
 from ...models import BookRecord, SearchResult
 from ...plugins import active_plugin
+
+
+_RETRY_AFTER_SECONDS = "10"  # client polls every N seconds while prefetch runs
+
+
+def _prepare_in_flight_response() -> JSONResponse:
+    """Hand back the DODP-clean async signal: 503 + Retry-After. The
+    client (BookPlayer, or any DODP-compliant consumer) waits the
+    suggested delay and retries; meanwhile the server-side prefetch
+    task keeps running in the background. Used by /resources and
+    /download routes when the cache is cold and a plugin fetch is
+    mid-flight."""
+    return JSONResponse(
+        status_code=503,
+        content={
+            "detail": "preparing",
+            "retry_after_seconds": int(_RETRY_AFTER_SECONDS),
+        },
+        headers={"Retry-After": _RETRY_AFTER_SECONDS},
+    )
 
 router = APIRouter(prefix="/protocols/hummingbird/v1")
 
@@ -328,13 +355,20 @@ async def resources_endpoint(
     fmt: int,
     node_id: int,
     user: str = Depends(auth_module.current_user),
-) -> ResourcesResponse:
-    cache = await ensure_cached(fmt, node_id, username=user)
-    if cache is None:
+):
+    """Returns the DODP-shape resource list. On cold cache, returns
+    503 + Retry-After while the background prefetch runs -- DODP-clean
+    async pattern so clients (BookPlayer, EasyReader, anything DODP-
+    compliant) don't have to hold a connection open for the 20+s S3
+    fetch."""
+    result = await ensure_cached_or_prefetch(fmt, node_id, username=user)
+    if result.state == CacheState.PREPARING:
+        return _prepare_in_flight_response()
+    if result.state != CacheState.READY or result.path is None:
         raise HTTPException(
             404, f"no cached file for format={fmt} node_id={node_id}"
         )
-    resources = list_resources(cache, fmt, node_id, _base_url(request))
+    resources = list_resources(result.path, fmt, node_id, _base_url(request))
     return ResourcesResponse(
         contentId=str(node_id),
         format=fmt,
@@ -433,21 +467,22 @@ async def download_info(
     fmt: int,
     node_id: int,
     user: str = Depends(auth_module.current_user),
-) -> DownloadListing:
+):
     """Return JSON metadata describing the cached file (single vs archive,
     filename, list of contents). Useful for DAISY-aware clients that want
     to inspect a DAISY 2.02 archive before fetching individual entries.
 
-    Lived at ``/download/{fmt}/{node_id}/`` until v0.3.2 -- but clients
-    like BookPlayer followed that URL blindly and got back JSON when
-    they expected audio bytes, so the URL we hand out in /bookshelf/list
-    now points at the file route below; this one's the explicit
-    inspection path."""
-    cache = await ensure_cached(fmt, node_id, username=user)
-    if cache is None:
+    Same async-prefetch behavior as /resources and /download: cold-cache
+    returns 503 + Retry-After.
+    """
+    result = await ensure_cached_or_prefetch(fmt, node_id, username=user)
+    if result.state == CacheState.PREPARING:
+        return _prepare_in_flight_response()
+    if result.state != CacheState.READY or result.path is None:
         raise HTTPException(
             404, f"no cached file for format={fmt} node_id={node_id}"
         )
+    cache = result.path
     if _is_zip_archive(cache):
         with zipfile.ZipFile(cache) as z:
             files = [m.filename for m in z.infolist() if not m.is_dir()]
@@ -469,16 +504,17 @@ async def download_file(
     user: str = Depends(auth_module.current_user),
 ):
     """Serve the cached file (or zip archive) for (fmt, node_id) as
-    bytes. Populates the cache via the plugin path if needed. This is
-    what `BookItem.url` points at so the client can do a single
-    blind GET and receive playable audio (or a DAISY zip the client
-    can extract locally)."""
-    cache = await ensure_cached(fmt, node_id, username=user)
-    if cache is None:
+    bytes. Cold-cache requests return 503 + Retry-After while the
+    plugin pulls from upstream; client polls and gets the file once
+    ready."""
+    result = await ensure_cached_or_prefetch(fmt, node_id, username=user)
+    if result.state == CacheState.PREPARING:
+        return _prepare_in_flight_response()
+    if result.state != CacheState.READY or result.path is None:
         raise HTTPException(
             404, f"no cached file for format={fmt} node_id={node_id}"
         )
-    return FileResponse(cache, media_type=_guess_mime(cache.name), filename=cache.name)
+    return FileResponse(result.path, media_type=_guess_mime(result.path.name), filename=result.path.name)
 
 
 @router.get("/download/{fmt}/{node_id}/{path:path}")
@@ -488,11 +524,14 @@ async def download_fetch(
     path: str,
     user: str = Depends(auth_module.current_user),
 ):
-    cache = await ensure_cached(fmt, node_id, username=user)
-    if cache is None:
+    result = await ensure_cached_or_prefetch(fmt, node_id, username=user)
+    if result.state == CacheState.PREPARING:
+        return _prepare_in_flight_response()
+    if result.state != CacheState.READY or result.path is None:
         raise HTTPException(
             404, f"no cached file for format={fmt} node_id={node_id}"
         )
+    cache = result.path
     if _is_zip_archive(cache):
         return _stream_zip_entry(cache, path)
     if path != cache.name:
