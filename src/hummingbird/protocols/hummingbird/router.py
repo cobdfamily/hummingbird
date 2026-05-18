@@ -24,7 +24,6 @@ from ... import storage
 from ...config import settings
 from ...download import (
     CacheState,
-    ensure_cached,
     ensure_cached_or_prefetch,
     list_resources,
 )
