@@ -149,6 +149,9 @@ class _CountingPlugin:
     async def get_bookmark(self, username, content_id):
         return {}
 
+    async def download(self, username, fmt, node_id, cache_dir):
+        raise NotImplementedError
+
 
 @pytest.fixture
 def plugin_client(tmp_path, monkeypatch):

@@ -35,6 +35,12 @@ class Settings(BaseSettings):
     # Storage.
     data_dir: Path = Path("data")
     cache_dir: Path = Path("cache")
+    # Files in cache_dir older than this many days are deleted by
+    # `download.prune_cache()`, run daily from main.startup. 30 default
+    # because audiobook downloads are large (multi-GB) and rarely
+    # replayed; cheaper to re-fetch on demand than store forever. Set
+    # to 0 to disable pruning.
+    cache_max_age_days: int = 30
 
     # Server bind.
     host: str = "0.0.0.0"

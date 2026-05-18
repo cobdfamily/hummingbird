@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from abc import ABC, abstractmethod
 from importlib.metadata import entry_points
+from pathlib import Path  # noqa: F401  (referenced in Plugin.download type hint)
 
 from .config import settings
 from .models import BookRecord, SearchResult
@@ -62,6 +63,29 @@ class Plugin(ABC):
         """Return the stored bookmark dict, or ``{}`` if no bookmark
         is set. ``raise NotImplementedError`` to defer to local
         file storage."""
+        ...
+
+    @abstractmethod
+    async def download(
+        self,
+        username: str,
+        fmt: int,
+        node_id: int,
+        cache_dir: "Path",
+    ) -> "Path | None":
+        """Fetch the (fmt, node_id) audio file from the upstream library
+        using whatever credentials/session this plugin manages, write it
+        into ``cache_dir`` (creating the dir if needed), and return the
+        absolute path. ``None`` means "not available."
+
+        For libraries whose files are publicly hosted, the plugin can
+        ``raise NotImplementedError`` and Hummingbird falls back to
+        its built-in cache + ``HUMMINGBIRD_PUBLIC_CONTENT_URL`` proxy.
+        For libraries like NNELS where the actual file is gated behind
+        a per-user authenticated session that only the plugin has, the
+        plugin MUST implement this hook -- the default path can't see
+        the upstream credentials.
+        """
         ...
 
 

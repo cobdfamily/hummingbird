@@ -237,3 +237,157 @@ async def test_ensure_cached_returns_existing(download):
 async def test_ensure_cached_returns_none_when_no_public_source(download):
     """Cache miss + no PUBLIC_CONTENT_URL -> None (no network)."""
     assert await download.ensure_cached(4, 700) is None
+
+
+# ---------------------------------------------------------------------------
+# Plugin path -- ensure_cached delegates to the active plugin when a username
+# is supplied, falls through on NotImplementedError, and ignores the plugin
+# entirely when called anonymously (no username).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_ensure_cached_plugin_populates_when_user_given(
+    download, tmp_path, monkeypatch
+):
+    """Plugin returns a Path -> ensure_cached returns it (no public-source
+    fall-through). This is the NNELS path -- the plugin uses its
+    per-user session to fetch the file, writes it to the per-(fmt,id)
+    cache dir, and hands the path back."""
+    fake_file = download.cache_dir_for(4, 800) / "plugin.mp3"
+    fake_file.parent.mkdir(parents=True, exist_ok=True)
+    fake_file.write_bytes(b"PLUGIN")
+
+    class _Plugin:
+        async def download(self, username, fmt, node_id, cache_dir):
+            return fake_file
+
+    import hummingbird.plugins as plugins
+    monkeypatch.setattr(plugins, "_active", _Plugin())
+    monkeypatch.setattr(plugins, "_loaded", True)
+
+    result = await download.ensure_cached(4, 800, username="alice")
+    assert result == fake_file
+
+
+@pytest.mark.asyncio
+async def test_ensure_cached_plugin_notimpl_falls_through(
+    download, tmp_path, monkeypatch
+):
+    """Plugin raises NotImplementedError -> public-source path used,
+    which returns None here because no public source is configured."""
+
+    class _Plugin:
+        async def download(self, username, fmt, node_id, cache_dir):
+            raise NotImplementedError
+
+    import hummingbird.plugins as plugins
+    monkeypatch.setattr(plugins, "_active", _Plugin())
+    monkeypatch.setattr(plugins, "_loaded", True)
+
+    assert await download.ensure_cached(4, 801, username="alice") is None
+
+
+@pytest.mark.asyncio
+async def test_ensure_cached_plugin_exception_falls_through(
+    download, tmp_path, monkeypatch
+):
+    """Plugin raises a non-NotImplementedError -> log + fall through;
+    we don't surface plugin errors as 5xx because the caller is the
+    user and the public-source fallback might still work."""
+
+    class _Plugin:
+        async def download(self, username, fmt, node_id, cache_dir):
+            raise RuntimeError("upstream is down")
+
+    import hummingbird.plugins as plugins
+    monkeypatch.setattr(plugins, "_active", _Plugin())
+    monkeypatch.setattr(plugins, "_loaded", True)
+
+    assert await download.ensure_cached(4, 802, username="alice") is None
+
+
+@pytest.mark.asyncio
+async def test_ensure_cached_skips_plugin_when_no_username(
+    download, tmp_path, monkeypatch
+):
+    """No username -> no plugin call. Defence in depth: an internal
+    caller (eg. a hypothetical pre-cache job) can't silently invoke an
+    authenticated upstream fetch under nobody's identity."""
+
+    invocations: list[str] = []
+
+    class _Plugin:
+        async def download(self, username, fmt, node_id, cache_dir):
+            invocations.append(username)
+            return None
+
+    import hummingbird.plugins as plugins
+    monkeypatch.setattr(plugins, "_active", _Plugin())
+    monkeypatch.setattr(plugins, "_loaded", True)
+
+    assert await download.ensure_cached(4, 803) is None
+    assert invocations == []
+
+
+# ---------------------------------------------------------------------------
+# prune_cache -- delete files older than cache_max_age_days, drop empty dirs
+# ---------------------------------------------------------------------------
+
+
+def test_prune_cache_removes_files_older_than_max_age(download, tmp_path):
+    import os
+    f = download.cache_dir_for(4, 900) / "old.mp3"
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_bytes(b"OLD")
+    # Force mtime back 35 days.
+    old = 35 * 86400
+    os.utime(f, (f.stat().st_atime - old, f.stat().st_mtime - old))
+
+    removed = download.prune_cache(max_age_days=30)
+    assert removed == 1
+    assert not f.exists()
+
+
+def test_prune_cache_keeps_recent_files(download, tmp_path):
+    f = download.cache_dir_for(4, 901) / "fresh.mp3"
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_bytes(b"NEW")
+    removed = download.prune_cache(max_age_days=30)
+    assert removed == 0
+    assert f.exists()
+
+
+def test_prune_cache_zero_max_age_is_noop(download, tmp_path):
+    """``max_age_days=0`` disables pruning (matches the
+    HUMMINGBIRD_CACHE_MAX_AGE_DAYS=0 escape hatch)."""
+    import os
+    f = download.cache_dir_for(4, 902) / "old.mp3"
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_bytes(b"OLD")
+    old = 90 * 86400
+    os.utime(f, (f.stat().st_atime - old, f.stat().st_mtime - old))
+
+    removed = download.prune_cache(max_age_days=0)
+    assert removed == 0
+    assert f.exists()
+
+
+def test_prune_cache_removes_empty_dirs(download, tmp_path):
+    import os
+    cache = download.cache_dir_for(4, 903)
+    cache.mkdir(parents=True, exist_ok=True)
+    f = cache / "old.mp3"
+    f.write_bytes(b"OLD")
+    old = 35 * 86400
+    os.utime(f, (f.stat().st_atime - old, f.stat().st_mtime - old))
+
+    download.prune_cache(max_age_days=30)
+    # File pruned, per-node dir pruned, per-format dir pruned.
+    assert not cache.exists()
+    assert not cache.parent.exists()
+
+
+def test_prune_cache_handles_missing_cache_dir(download, tmp_path, monkeypatch):
+    monkeypatch.setattr(download.settings, "cache_dir", tmp_path / "does-not-exist")
+    assert download.prune_cache(max_age_days=30) == 0

@@ -367,8 +367,14 @@ def _stream_zip_entry(zip_path: Path, inner_path: str) -> StreamingResponse:
 
 @router.get("/download/{fmt}/{node_id}/", response_model=DownloadListing)
 @router.get("/download/{fmt}/{node_id}", response_model=DownloadListing)
-async def download_listing(fmt: int, node_id: int) -> DownloadListing:
-    cache = await ensure_cached(fmt, node_id)
+async def download_listing(
+    fmt: int,
+    node_id: int,
+    user: str = Depends(auth_module.current_user),
+) -> DownloadListing:
+    # ``user`` is needed so the plugin path can authenticate the upstream
+    # fetch (NNELS gates the file behind a per-user Playwright session).
+    cache = await ensure_cached(fmt, node_id, username=user)
     if cache is None:
         raise HTTPException(
             404, f"no cached file for format={fmt} node_id={node_id}"
@@ -387,8 +393,13 @@ async def download_listing(fmt: int, node_id: int) -> DownloadListing:
 
 
 @router.get("/download/{fmt}/{node_id}/{path:path}")
-async def download_fetch(fmt: int, node_id: int, path: str):
-    cache = await ensure_cached(fmt, node_id)
+async def download_fetch(
+    fmt: int,
+    node_id: int,
+    path: str,
+    user: str = Depends(auth_module.current_user),
+):
+    cache = await ensure_cached(fmt, node_id, username=user)
     if cache is None:
         raise HTTPException(
             404, f"no cached file for format={fmt} node_id={node_id}"

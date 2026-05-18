@@ -43,6 +43,10 @@ class FakePlugin(Plugin):
         )
         self.set_bookmark_returns: bool | type = True
         self.get_bookmark_returns: dict | type = {}
+        # Default: defer to the built-in cache + public-source path, so
+        # tests that don't exercise the plugin download branch don't
+        # have to stage a fake file.
+        self.download_returns: object = NotImplementedError
         self.calls: list[tuple[str, tuple]] = []
 
     @staticmethod
@@ -78,6 +82,14 @@ class FakePlugin(Plugin):
     async def get_bookmark(self, username, content_id):
         self.calls.append(("get_bookmark", (username, content_id)))
         return self._maybe_raise(self.get_bookmark_returns)
+
+    async def download(self, username, fmt, node_id, cache_dir):
+        # Default behaviour: raise NotImplementedError so the default
+        # public-source fallback path is exercised. Individual tests
+        # flip ``download_returns`` to a Path (or NotImplementedError /
+        # an exception class) to drive the plugin-hit branch.
+        self.calls.append(("download", (username, fmt, node_id, cache_dir)))
+        return self._maybe_raise(self.download_returns)
 
 
 # ---------------------------------------------------------------------------
