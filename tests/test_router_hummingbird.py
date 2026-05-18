@@ -177,6 +177,28 @@ def test_bookshelf_401_when_no_auth(client):
     assert r.headers.get("WWW-Authenticate") == "Basic"
 
 
+def test_bookshelf_list_exposes_due_date(client):
+    """Standalone storage carries due_date end-to-end so a client (eg.
+    BookPlayer) can auto-return expired loans."""
+    import hummingbird.storage as storage
+    storage.add_to_bookshelf(
+        "alice", 42, format=4, title="X",
+        due_date="2026-06-01T00:00:00+00:00",
+    )
+    r = client.get("/protocols/hummingbird/v1/bookshelf/list")
+    item = r.json()["items"][0]
+    assert item["due_date"] == "2026-06-01T00:00:00+00:00"
+
+
+def test_bookshelf_list_due_date_null_for_libraries_without_loans(client):
+    """NNELS-style: no loan period -> due_date is null in the response."""
+    import hummingbird.storage as storage
+    storage.add_to_bookshelf("alice", 42, format=4, title="X")
+    r = client.get("/protocols/hummingbird/v1/bookshelf/list")
+    item = r.json()["items"][0]
+    assert item["due_date"] is None
+
+
 # ---------------------------------------------------------------------------
 # /bookshelf/bookmark (standalone, no plugin -> file-backed storage)
 # ---------------------------------------------------------------------------

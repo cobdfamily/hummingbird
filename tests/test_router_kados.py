@@ -418,6 +418,38 @@ def test_content_issuable_default_false(client):
 # ---------------------------------------------------------------------------
 
 
+def test_content_return_date_via_storage(client):
+    """contentReturnDate reads the per-book due_date persisted in
+    storage. None for books with no loan period."""
+    token = _authenticate(client)
+    h = _session_headers(token)
+    # Stage two books on the shelf: one with a due_date, one without.
+    import hummingbird.storage as storage
+    storage.add_to_bookshelf(
+        "alice", 42, format=4, title="X",
+        due_date="2026-06-01T00:00:00+00:00",
+    )
+    storage.add_to_bookshelf("alice", 43, format=4, title="Y")
+    r = _call(client, "contentReturnDate", {"contentId": 42}, headers=h)
+    assert r.json()["data"] == "2026-06-01T00:00:00+00:00"
+    r = _call(client, "contentReturnDate", {"contentId": 43}, headers=h)
+    assert r.json()["data"] is None
+
+
+def test_content_return_date_anon_returns_none(client):
+    r = _call(client, "contentReturnDate", {"contentId": 42})
+    assert r.json()["data"] is None
+
+
+def test_content_return_date_invalid_content_id_returns_none(client):
+    token = _authenticate(client)
+    r = _call(
+        client, "contentReturnDate", {"contentId": "not-a-number"},
+        headers=_session_headers(token),
+    )
+    assert r.json()["data"] is None
+
+
 def test_set_and_get_bookmarks_roundtrip(client):
     token = _authenticate(client)
     h = _session_headers(token)

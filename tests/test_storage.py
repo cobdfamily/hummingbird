@@ -159,3 +159,49 @@ def test_bookmarks_isolated_per_user_and_per_content(storage):
     assert storage.read_bookmark("alice", 42)["currentTime"] == 1.0
     assert storage.read_bookmark("alice", 43)["currentTime"] == 2.0
     assert storage.read_bookmark("bob", 42)["currentTime"] == 3.0
+
+
+# ---------------------------------------------------------------------------
+# due_date (loan-period)
+# ---------------------------------------------------------------------------
+
+
+def test_add_with_due_date_round_trips_through_list_bookshelf(storage):
+    storage.add_to_bookshelf(
+        "alice", 42, format=1, title="X", due_date="2026-06-01T00:00:00+00:00"
+    )
+    shelf = storage.list_bookshelf("alice")
+    assert shelf[0].due_date == "2026-06-01T00:00:00+00:00"
+
+
+def test_get_due_date_returns_stored_value(storage):
+    storage.add_to_bookshelf(
+        "alice", 42, format=1, title="X", due_date="2026-06-01T00:00:00+00:00"
+    )
+    assert storage.get_due_date("alice", 42) == "2026-06-01T00:00:00+00:00"
+
+
+def test_get_due_date_returns_none_when_unset(storage):
+    """No loan period (the NNELS case) -> due_date is None."""
+    storage.add_to_bookshelf("alice", 42, format=1, title="X")
+    assert storage.get_due_date("alice", 42) is None
+
+
+def test_get_due_date_returns_none_when_book_not_on_shelf(storage):
+    assert storage.get_due_date("alice", 999) is None
+
+
+def test_old_shelf_files_without_due_date_load_cleanly(storage, tmp_path):
+    """Persisted shelves written before due_date existed don't carry
+    the field; the loader has to tolerate that or we lose backwards
+    compatibility with existing operator deployments."""
+    # Hand-craft an old-style shelf file.
+    import json
+    path = tmp_path / "bookshelves" / "alice.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps([{
+        "id": 42, "format": 1, "title": "X", "added_at": "2026-01-01T00:00:00+00:00"
+    }]))
+    shelf = storage.list_bookshelf("alice")
+    assert len(shelf) == 1
+    assert shelf[0].due_date is None

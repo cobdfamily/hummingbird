@@ -399,6 +399,26 @@ def test_kados_content_add_bookshelf_via_plugin(app_with_plugin):
     assert plugin.calls[-1] == ("add_to_bookshelf", ("alice", 42))
 
 
+def test_kados_content_return_date_via_plugin(app_with_plugin):
+    """Plugin overrides ``list_bookshelf`` to return a book with a
+    due_date. ``contentReturnDate`` finds that book and returns the
+    due_date (rather than falling through to storage)."""
+    client, plugin = app_with_plugin
+    plugin.list_bookshelf_returns = [
+        BookRecord(
+            id=42, title="Loan",
+            formats=[FormatEntry(id=4, label="MP3")],
+            due_date="2026-06-01T00:00:00+00:00",
+        ),
+    ]
+    token = _login_kados(client)
+    r = _kados(
+        client, "contentReturnDate", {"contentId": 42},
+        headers={"Authorization": f"Session {token}"},
+    )
+    assert r.json()["data"] == "2026-06-01T00:00:00+00:00"
+
+
 def test_kados_content_return_via_plugin(app_with_plugin):
     client, plugin = app_with_plugin
     plugin.remove_from_bookshelf_returns = True

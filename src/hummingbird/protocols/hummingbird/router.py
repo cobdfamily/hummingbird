@@ -33,6 +33,7 @@ class BookItem(BaseModel):
     id: int
     title: str
     url: str
+    due_date: str | None = None
 
 
 class LoginResponse(BaseModel):
@@ -129,6 +130,7 @@ def _flatten_to_items(books: list[BookRecord], base_url: str) -> list[BookItem]:
                     id=b.id,
                     title=f"{b.title} ({fmt.label}{suffix})",
                     url=f"{base_url}/protocols/hummingbird/v1/download/{fmt.id}/{b.id}/",
+                    due_date=b.due_date,
                 )
             )
     return items

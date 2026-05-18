@@ -46,6 +46,7 @@ class ShelfEntry:
     format: int
     title: str
     added_at: str
+    due_date: str | None = None
 
 
 def _read_shelf(username: str) -> list[ShelfEntry]:
@@ -53,7 +54,9 @@ def _read_shelf(username: str) -> list[ShelfEntry]:
     if not path.exists():
         return []
     raw = json.loads(path.read_text())
-    return [ShelfEntry(**r) for r in raw]
+    # ``due_date`` was added later -- tolerate older shelf files that
+    # don't carry it by defaulting to None.
+    return [ShelfEntry(due_date=r.get("due_date"), **{k: v for k, v in r.items() if k != "due_date"}) for r in raw]
 
 
 def _write_shelf(username: str, entries: list[ShelfEntry]) -> None:
@@ -71,23 +74,39 @@ def list_bookshelf(username: str) -> list[BookRecord]:
                 id=entry.id,
                 title=entry.title,
                 formats=[FormatEntry(id=entry.format, label=format_label(entry.format))],
+                due_date=entry.due_date,
             )
         )
     return out
 
 
 def add_to_bookshelf(
-    username: str, node_id: int, format: int, title: str = ""
+    username: str, node_id: int, format: int, title: str = "", due_date: str | None = None
 ) -> bool:
     """Append one (book, format) entry. No-op if the pair is already present."""
     entries = _read_shelf(username)
     if any(e.id == node_id and e.format == format for e in entries):
         return True
     entries.append(
-        ShelfEntry(id=node_id, format=format, title=title, added_at=_utc_now())
+        ShelfEntry(
+            id=node_id, format=format, title=title,
+            added_at=_utc_now(), due_date=due_date,
+        )
     )
     _write_shelf(username, entries)
     return True
+
+
+def get_due_date(username: str, node_id: int) -> str | None:
+    """Return the due_date stored for a (user, book) pair, or None.
+
+    Used by the KADOS ``contentReturnDate`` handler -- centralising the
+    lookup in storage so the plugin-vs-storage delegation pattern can
+    cleanly fall through here when the plugin doesn't override."""
+    for entry in _read_shelf(username):
+        if entry.id == node_id:
+            return entry.due_date
+    return None
 
 
 def remove_from_bookshelf(username: str, node_id: int, format: int | None = None) -> bool:

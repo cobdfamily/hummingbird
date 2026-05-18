@@ -271,12 +271,35 @@ async def _get_bookmarks(data: dict, user: str | None, **_) -> dict:
 _STUBS = [
     "contentLastModifiedDate", "contentAccessDate", "contentAccessMethod",
     "contentAccessState", "contentSample", "contentCategory",
-    "contentSubCategory", "contentReturnDate", "contentIssue",
+    "contentSubCategory", "contentIssue",
     "announcementInfo", "announcementExists", "announcementRead",
     "menuDefault", "menuSearch", "menuBack", "menuNext", "menuContentQuestion",
     "requestedKey", "clientKey", "issuerInfo", "userCredentials",
     "termsOfService", "termsOfServiceAccept",
 ]
+
+
+@method("contentReturnDate")
+async def _content_return_date(data: dict, user: str | None, **_) -> str | None:
+    """Return the ISO-8601 due date for a (user, book) pair, or None if
+    the library has no loan period (NNELS) or the book isn't on the
+    user's shelf. Drives client-side auto-return on expiry."""
+    if not user:
+        return None
+    try:
+        cid = int(data.get("contentId", 0))
+    except (TypeError, ValueError):
+        return None
+    plugin = active_plugin()
+    if plugin is not None:
+        try:
+            for book in await plugin.list_bookshelf(user):
+                if book.id == cid:
+                    return book.due_date
+            return None
+        except NotImplementedError:
+            pass
+    return storage.get_due_date(user, cid)
 
 
 def _stub_factory(name: str) -> Handler:
