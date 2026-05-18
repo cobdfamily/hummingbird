@@ -5,6 +5,66 @@ Versioning: SemVer; pre-1.0 minor bumps may break.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-05-18
+
+Pre-Sweep-1B scope-A correctness pass: defensive sanitization,
+typed session-expired signal, and a content-keyed prefetch dedupe.
+Server-side only; no client changes required.
+
+### Fixed
+- **Path-traversal defense at the storage layer.** Usernames flow in
+  from HTTP Basic auth (REST) and the KADOS Session-token resolver;
+  KADOS `contentId`s flow in from arbitrary RPC callers. Both were
+  being interpolated directly into filesystem paths
+  (`bookshelves/{user}.json`, `bookmarks/{user}/{cid}.json`, etc.).
+  A KADOS client passing `contentId="../sessions/admin"` could write
+  to any path the server process could reach. New
+  `storage._safe_component(...)` helper rejects empty, overlong,
+  ``.``/``..``, and `/` / `\` / NUL-containing components with
+  `ValueError` before they're used in path construction. Applied to
+  every shelf / session / bookmark path on both surfaces.
+
+- **NNELS expired-cookie no longer surfaces as a silent empty
+  bookshelf.** New `hummingbird.plugins.SessionExpired` exception:
+  plugins raise it when their upstream session is no longer usable,
+  the REST router maps to HTTP 401 + `WWW-Authenticate: Basic`, the
+  KADOS router maps to HTTP 401 *and* drops the caller's token from
+  the in-memory `_SESSIONS` map so a follow-up `authenticate` call
+  mints a fresh one. The previous behavior -- `list_bookshelf`
+  returning `[]` when NNELS had logged the user out -- read to users
+  as "all my books vanished," which was worst-possible UX. Routes
+  that touch the plugin (bookshelf list / add / remove, search,
+  bookmark get / set, resources, download, download-fetch) all
+  carry the new branch.
+
+- **Plugin-driven download SessionExpired propagates through the
+  async prefetch.** New `CacheState.SESSION_EXPIRED` state. When
+  `plugin.download` raises `SessionExpired`, the background prefetch
+  task surfaces it on the next poll instead of swallowing it as
+  generic FAILED. Route returns 401 (REST) or 401 with token drop
+  (KADOS) so clients can re-auth instead of seeing an opaque 404.
+
+### Changed
+- **Prefetch in-flight dedupe is now content-keyed, not user-keyed.**
+  `download._INFLIGHT` was keyed on `(username, fmt, node_id)`, which
+  meant two users requesting the same multi-GB audiobook spawned two
+  independent fetch tasks against the same shared cache slot. The
+  key is now `(fmt, node_id)`: the audiobook bytes are identical for
+  any user with access, so one fetch task feeds both. The plugin
+  still receives the user that triggered the first request (for the
+  authenticated upstream session); on task failure the key is
+  cleared and a subsequent request from a different user spawns a
+  fresh task. New `test_download.test_or_prefetch_dedupes_across_users`
+  locks the contract.
+
+### Tests
+24 new tests across `test_storage.py` (sanitization regressions),
+`test_plugin_active.py` (SessionExpired → 401 for every plugin-
+touching REST route + resources/download), `test_router_kados.py`
+(KADOS dispatcher maps SessionExpired to 401 *and* drops the
+token), and `test_download.py` (content-keyed dedupe + prefetch
+SessionExpired propagation). Total 230 tests; coverage 94.11%.
+
 ## [0.1.11] - 2026-05-03
 
 ### Tests

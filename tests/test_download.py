@@ -485,3 +485,83 @@ async def test_or_prefetch_failed_when_plugin_returns_none(
     await asyncio.sleep(0)
     result = await download.ensure_cached_or_prefetch(4, 7704, username="alice")
     assert result.state == download.CacheState.MISSING
+
+
+@pytest.mark.asyncio
+async def test_or_prefetch_dedupes_across_users(
+    download, tmp_path, monkeypatch
+):
+    """Two users requesting the same (fmt, node_id) share ONE prefetch
+    task. The cache is content-keyed -- same audiobook = same bytes --
+    so it'd be wasteful to download it twice. The plugin still sees
+    whichever username called first; both users observe READY once
+    the file lands."""
+    fetch_calls: list[tuple] = []
+    barrier = asyncio.Event()
+
+    class _Plugin:
+        async def download(self, username, fmt, node_id, cache_dir):
+            fetch_calls.append((username, fmt, node_id))
+            # Block until the test releases us, so we can observe the
+            # in-flight state from the second user's request.
+            await barrier.wait()
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            target = cache_dir / "book.mp3"
+            target.write_bytes(b"AUDIO")
+            return target
+
+    import hummingbird.plugins as plugins
+    monkeypatch.setattr(plugins, "_active", _Plugin())
+    monkeypatch.setattr(plugins, "_loaded", True)
+
+    # User A kicks off the prefetch.
+    a = await download.ensure_cached_or_prefetch(4, 7710, username="alice")
+    assert a.state == download.CacheState.PREPARING
+    # Yield so the prefetch task gets to its first await (the barrier).
+    await asyncio.sleep(0)
+    assert len(fetch_calls) == 1
+    assert fetch_calls[0][0] == "alice"
+
+    # User B requests the same (fmt, node_id) while A's task is parked.
+    # The dedupe keys on (fmt, node_id), so B observes A's in-flight task.
+    b = await download.ensure_cached_or_prefetch(4, 7710, username="bob")
+    assert b.state == download.CacheState.PREPARING
+    # Still only one upstream fetch -- A's slot wasn't duplicated.
+    assert len(fetch_calls) == 1
+
+    # Let the task complete.
+    barrier.set()
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    # Both users now see READY pointing at the same shared cache file.
+    a2 = await download.ensure_cached_or_prefetch(4, 7710, username="alice")
+    b2 = await download.ensure_cached_or_prefetch(4, 7710, username="bob")
+    assert a2.state == download.CacheState.READY
+    assert b2.state == download.CacheState.READY
+    assert a2.path == b2.path
+
+
+@pytest.mark.asyncio
+async def test_or_prefetch_session_expired_from_plugin(
+    download, tmp_path, monkeypatch
+):
+    """SessionExpired raised inside plugin.download propagates through
+    the task; the next poll sees SESSION_EXPIRED so the route can
+    surface 401 instead of a generic FAILED."""
+    from hummingbird.plugins import SessionExpired
+
+    class _Plugin:
+        async def download(self, username, fmt, node_id, cache_dir):
+            raise SessionExpired("upstream cookie expired")
+
+    import hummingbird.plugins as plugins
+    monkeypatch.setattr(plugins, "_active", _Plugin())
+    monkeypatch.setattr(plugins, "_loaded", True)
+
+    first = await download.ensure_cached_or_prefetch(4, 7720, username="alice")
+    assert first.state == download.CacheState.PREPARING
+    await asyncio.sleep(0)
+    second = await download.ensure_cached_or_prefetch(4, 7720, username="alice")
+    assert second.state == download.CacheState.SESSION_EXPIRED
+    assert "expired" in (second.error or "").lower()

@@ -205,3 +205,53 @@ def test_old_shelf_files_without_due_date_load_cleanly(storage, tmp_path):
     shelf = storage.list_bookshelf("alice")
     assert len(shelf) == 1
     assert shelf[0].due_date is None
+
+
+# ---------- path-traversal sanitization ---------------------------------
+
+class TestSanitization:
+    """Reject filesystem-unsafe usernames and content_ids before they
+    become part of a path. Without these guards a username like
+    ``../etc/foo`` or a KADOS contentId of ``../../sessions/admin``
+    would let a caller write to / read from arbitrary paths."""
+
+    @pytest.mark.parametrize("bad", [
+        "../etc/passwd", "alice/../bob", "..", ".", "a/b", "a\\b", "a\x00b", "",
+    ])
+    def test_list_bookshelf_rejects_unsafe_username(self, storage, bad):
+        with pytest.raises(ValueError):
+            storage.list_bookshelf(bad)
+
+    @pytest.mark.parametrize("bad", [
+        "../etc/passwd", "alice/../bob", "..", ".", "a/b", "a\\b", "a\x00b",
+    ])
+    def test_add_to_bookshelf_rejects_unsafe_username(self, storage, bad):
+        with pytest.raises(ValueError):
+            storage.add_to_bookshelf(bad, 42, format=1)
+
+    @pytest.mark.parametrize("bad", [
+        "../sessions/admin", "..", ".", "12/3", "a\\b", "a\x00b",
+    ])
+    def test_write_bookmark_rejects_unsafe_content_id(self, storage, bad):
+        with pytest.raises(ValueError):
+            storage.write_bookmark("alice", bad, {"position": 1})
+
+    @pytest.mark.parametrize("bad", [
+        "../sessions/admin", "..", "a/b",
+    ])
+    def test_read_bookmark_rejects_unsafe_content_id(self, storage, bad):
+        with pytest.raises(ValueError):
+            storage.read_bookmark("alice", bad)
+
+    def test_overlong_username_rejected(self, storage):
+        with pytest.raises(ValueError):
+            storage.list_bookshelf("a" * 300)
+
+    def test_normal_usernames_pass_through(self, storage):
+        # Common shapes that must keep working.
+        for ok in ["alice", "matt", "matt@cobd.ca", "matt+library@cobd.ca", "user-123", "user_42"]:
+            assert storage.list_bookshelf(ok) == []  # no file yet -> []
+
+    def test_session_write_rejects_unsafe_username(self, storage):
+        with pytest.raises(ValueError):
+            storage.write_session("../etc/passwd")

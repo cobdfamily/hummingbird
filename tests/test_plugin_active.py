@@ -677,3 +677,93 @@ def test_download_fetch_returns_503_then_404_for_missing_cache(app_with_plugin):
     _time.sleep(0.1)
     r = client.get("/protocols/hummingbird/v1/download/4/9999/missing.mp3")
     assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# SessionExpired -> 401 across every plugin-touching route
+# ---------------------------------------------------------------------------
+
+
+def test_bookshelf_session_expired_returns_401(app_with_plugin):
+    """An expired upstream cookie used to look like an empty bookshelf
+    -- worst-possible UX (user thinks their books vanished). Plugin
+    raising SessionExpired now surfaces as 401 + WWW-Authenticate so
+    clients trigger a fresh sign-in."""
+    from hummingbird.plugins import SessionExpired
+    client, plugin = app_with_plugin
+    plugin.list_bookshelf_returns = SessionExpired
+    r = client.get("/protocols/hummingbird/v1/bookshelf/list")
+    assert r.status_code == 401
+    assert r.headers.get("WWW-Authenticate") == "Basic"
+
+
+def test_search_session_expired_returns_401(app_with_plugin):
+    from hummingbird.plugins import SessionExpired
+    client, plugin = app_with_plugin
+    plugin.search_returns = SessionExpired
+    r = client.get("/protocols/hummingbird/v1/search?q=anything")
+    assert r.status_code == 401
+
+
+def test_bookshelf_add_session_expired_returns_401(app_with_plugin):
+    from hummingbird.plugins import SessionExpired
+    client, plugin = app_with_plugin
+    plugin.add_to_bookshelf_returns = SessionExpired
+    r = client.post("/protocols/hummingbird/v1/bookshelf/add/42")
+    assert r.status_code == 401
+
+
+def test_bookshelf_remove_session_expired_returns_401(app_with_plugin):
+    from hummingbird.plugins import SessionExpired
+    client, plugin = app_with_plugin
+    plugin.remove_from_bookshelf_returns = SessionExpired
+    r = client.post("/protocols/hummingbird/v1/bookshelf/remove/42")
+    assert r.status_code == 401
+
+
+def test_bookmark_get_session_expired_returns_401(app_with_plugin):
+    from hummingbird.plugins import SessionExpired
+    client, plugin = app_with_plugin
+    plugin.get_bookmark_returns = SessionExpired
+    r = client.get("/protocols/hummingbird/v1/bookshelf/bookmark/42")
+    assert r.status_code == 401
+
+
+def test_bookmark_set_session_expired_returns_401(app_with_plugin):
+    from hummingbird.plugins import SessionExpired
+    client, plugin = app_with_plugin
+    plugin.set_bookmark_returns = SessionExpired
+    r = client.post(
+        "/protocols/hummingbird/v1/bookshelf/bookmark/42",
+        json={"bookmark": {"position": 1}},
+    )
+    assert r.status_code == 401
+
+
+def test_download_session_expired_returns_401(app_with_plugin):
+    """SessionExpired raised from plugin.download propagates through
+    the async-prefetch task; the second poll sees SESSION_EXPIRED
+    state and returns 401 instead of a generic 404."""
+    from hummingbird.plugins import SessionExpired
+    client, plugin = app_with_plugin
+    plugin.download_returns = SessionExpired
+    # First call kicks off prefetch -> 503.
+    r = client.get("/protocols/hummingbird/v1/download/4/9999/")
+    assert r.status_code == 503
+    import time as _time
+    _time.sleep(0.1)
+    # Second call drains the task; SessionExpired routed to 401.
+    r = client.get("/protocols/hummingbird/v1/download/4/9999/")
+    assert r.status_code == 401
+
+
+def test_resources_session_expired_returns_401(app_with_plugin):
+    from hummingbird.plugins import SessionExpired
+    client, plugin = app_with_plugin
+    plugin.download_returns = SessionExpired
+    r = client.get("/protocols/hummingbird/v1/resources/4/9999")
+    assert r.status_code == 503
+    import time as _time
+    _time.sleep(0.1)
+    r = client.get("/protocols/hummingbird/v1/resources/4/9999")
+    assert r.status_code == 401

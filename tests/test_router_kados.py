@@ -552,3 +552,76 @@ def test_get_bookmarks_no_file_empty(client):
     token = _authenticate(client)
     r = _call(client, "getBookmarks", {"contentId": 999}, headers=_session_headers(token))
     assert r.json()["data"] == {}
+
+
+# ---------------------------------------------------------------------------
+# SessionExpired -> 401 + session-token drop
+# ---------------------------------------------------------------------------
+
+
+def test_kados_session_expired_returns_401_and_drops_token(tmp_path, monkeypatch):
+    """Plugin raises SessionExpired -> router maps to HTTP 401 and
+    removes the caller's token from _SESSIONS so the next authenticate
+    mints a fresh one. The PHP adapter doc says session-required
+    endpoints MUST 401 so KADOS can re-trigger logOn."""
+    monkeypatch.setenv("HUMMINGBIRD_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("HUMMINGBIRD_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setenv("HUMMINGBIRD_USERNAME", "alice")
+    monkeypatch.setenv("HUMMINGBIRD_PASSWORD", "secret")
+    monkeypatch.setenv("HUMMINGBIRD_PLUGIN", "")
+    monkeypatch.delenv("KADOS_API_KEY", raising=False)
+
+    import hummingbird.auth as auth
+    import hummingbird.config as config
+    import hummingbird.download as download
+    import hummingbird.plugins as plugins
+    import hummingbird.storage as storage
+    importlib.reload(config)
+    importlib.reload(storage)
+    importlib.reload(download)
+    importlib.reload(plugins)
+    importlib.reload(auth)
+    import hummingbird.protocols.kados.methods as kd_methods
+    import hummingbird.protocols.kados.router as kd_router
+    import hummingbird.protocols.hummingbird.router as hb_router
+    importlib.reload(kd_methods)
+    importlib.reload(kd_router)
+    importlib.reload(hb_router)
+    import hummingbird.main as main
+    importlib.reload(main)
+    # Import AFTER the reloads so class identity matches what the
+    # reloaded router catches in `except SessionExpired`.
+    from hummingbird.plugins import Plugin, SessionExpired
+
+    class _Plugin(Plugin):
+        async def authenticate(self, u, p): return True
+        async def list_bookshelf(self, u): raise SessionExpired("nnels cookie gone")
+        async def add_to_bookshelf(self, u, n): raise NotImplementedError
+        async def remove_from_bookshelf(self, u, n): raise NotImplementedError
+        async def search(self, u, q, f, p): raise NotImplementedError
+        async def set_bookmark(self, u, c, b): raise NotImplementedError
+        async def get_bookmark(self, u, c): raise NotImplementedError
+        async def download(self, u, f, n, d): raise NotImplementedError
+
+    plugins._active = _Plugin()
+    plugins._loaded = True
+
+    tc = TestClient(main.app)
+
+    # authenticate -> get a token.
+    r = tc.post(
+        "/protocols/kados/v1/methods/authenticate/",
+        json={"method": "authenticate", "data": {"username": "alice", "password": "secret"}},
+    )
+    assert r.status_code == 200
+    token = r.json()["data"]["sessionToken"]
+    assert token in kd_router._SESSIONS
+
+    # contentList -> plugin raises SessionExpired -> 401 AND token dropped.
+    r = tc.post(
+        "/protocols/kados/v1/methods/contentList/",
+        json={"method": "contentList", "data": {"list": "bookshelf"}},
+        headers={"Authorization": f"Session {token}"},
+    )
+    assert r.status_code == 401
+    assert token not in kd_router._SESSIONS

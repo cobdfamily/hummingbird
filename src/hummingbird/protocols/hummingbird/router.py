@@ -28,10 +28,23 @@ from ...download import (
     list_resources,
 )
 from ...models import BookRecord, SearchResult
-from ...plugins import active_plugin
+from ...plugins import SessionExpired, active_plugin
 
 
 _RETRY_AFTER_SECONDS = "10"  # client polls every N seconds while prefetch runs
+
+
+def _session_expired_response(exc: SessionExpired) -> JSONResponse:
+    """Map a plugin SessionExpired into the same 401 + WWW-Authenticate
+    shape ``current_user`` already uses for missing/invalid Basic auth.
+    Client (BookPlayer, EasyReader, any DODP-compliant consumer) treats
+    it as 'creds went stale upstream, re-auth and retry' rather than as
+    a silent empty bookshelf."""
+    return JSONResponse(
+        status_code=401,
+        content={"detail": str(exc) or "upstream session expired"},
+        headers={"WWW-Authenticate": "Basic"},
+    )
 
 
 def _prepare_in_flight_response() -> JSONResponse:
@@ -228,13 +241,19 @@ async def login(payload: LoginRequest) -> LoginResponse:
 async def bookshelf_list(
     request: Request,
     user: str = Depends(auth_module.current_user),
-) -> BookshelfListResponse:
+):
     plugin = active_plugin()
     if plugin is not None:
         try:
             books = await plugin.list_bookshelf(user)
         except NotImplementedError:
             books = storage.list_bookshelf(user)
+        except SessionExpired as e:
+            # Previously logged "session may be expired" and returned
+            # an empty list -- worst-possible UX (looks like the user
+            # lost all their books). Surface as 401 so the client
+            # triggers a fresh sign-in.
+            return _session_expired_response(e)
     else:
         books = storage.list_bookshelf(user)
     items = _flatten_to_items(books, _base_url(request))
@@ -247,7 +266,7 @@ async def bookshelf_add(
     user: str = Depends(auth_module.current_user),
     format: Annotated[int, Query(ge=0, description="standalone only; plugin ignores")] = 0,
     title: Annotated[str, Query(description="standalone only; plugin ignores")] = "",
-) -> ShelfActionResponse:
+):
     plugin = active_plugin()
     if plugin is not None:
         try:
@@ -257,6 +276,8 @@ async def bookshelf_add(
             )
         except NotImplementedError:
             pass
+        except SessionExpired as e:
+            return _session_expired_response(e)
     ok = storage.add_to_bookshelf(user, node_id, format=format, title=title)
     return ShelfActionResponse(username=user, node_id=node_id, action="add", success=ok)
 
@@ -266,7 +287,7 @@ async def bookshelf_remove(
     node_id: int,
     user: str = Depends(auth_module.current_user),
     format: Annotated[int | None, Query(description="standalone only; plugin ignores")] = None,
-) -> ShelfActionResponse:
+):
     plugin = active_plugin()
     if plugin is not None:
         try:
@@ -276,6 +297,8 @@ async def bookshelf_remove(
             )
         except NotImplementedError:
             pass
+        except SessionExpired as e:
+            return _session_expired_response(e)
     ok = storage.remove_from_bookshelf(user, node_id, format=format)
     return ShelfActionResponse(username=user, node_id=node_id, action="remove", success=ok)
 
@@ -296,7 +319,7 @@ async def bookshelf_remove(
 async def bookmark_get(
     node_id: int,
     user: str = Depends(auth_module.current_user),
-) -> BookmarkResponse:
+):
     plugin = active_plugin()
     if plugin is not None:
         try:
@@ -306,6 +329,8 @@ async def bookmark_get(
             )
         except NotImplementedError:
             pass
+        except SessionExpired as e:
+            return _session_expired_response(e)
     return BookmarkResponse(
         username=user, node_id=node_id, bookmark=storage.read_bookmark(user, node_id)
     )
@@ -318,7 +343,7 @@ async def bookmark_set(
     node_id: int,
     payload: BookmarkRequest,
     user: str = Depends(auth_module.current_user),
-) -> BookmarkActionResponse:
+):
     plugin = active_plugin()
     if plugin is not None:
         try:
@@ -328,6 +353,8 @@ async def bookmark_set(
             )
         except NotImplementedError:
             pass
+        except SessionExpired as e:
+            return _session_expired_response(e)
     ok = storage.write_bookmark(user, node_id, payload.bookmark or {})
     return BookmarkActionResponse(
         username=user, node_id=node_id, action="set", success=ok
@@ -364,6 +391,8 @@ async def resources_endpoint(
     result = await ensure_cached_or_prefetch(fmt, node_id, username=user)
     if result.state == CacheState.PREPARING:
         return _prepare_in_flight_response()
+    if result.state == CacheState.SESSION_EXPIRED:
+        return _session_expired_response(SessionExpired(result.error or ""))
     if result.state != CacheState.READY or result.path is None:
         raise HTTPException(
             404, f"no cached file for format={fmt} node_id={node_id}"
@@ -397,6 +426,8 @@ async def search_endpoint(
             result: SearchResult = await plugin.search(user, q, formats, page)
         except NotImplementedError:
             result = SearchResult(query=q, page=page, books=[])
+        except SessionExpired as e:
+            return _session_expired_response(e)
         except (httpx.ReadTimeout, httpx.ConnectTimeout, httpx.PoolTimeout) as e:
             # NNELS is intermittently very slow; surface as 504 so clients
             # know to retry instead of treating it as a server crash (500).
@@ -485,6 +516,8 @@ async def download_info(
     result = await ensure_cached_or_prefetch(fmt, node_id, username=user)
     if result.state == CacheState.PREPARING:
         return _prepare_in_flight_response()
+    if result.state == CacheState.SESSION_EXPIRED:
+        return _session_expired_response(SessionExpired(result.error or ""))
     if result.state != CacheState.READY or result.path is None:
         raise HTTPException(
             404, f"no cached file for format={fmt} node_id={node_id}"
@@ -517,6 +550,8 @@ async def download_file(
     result = await ensure_cached_or_prefetch(fmt, node_id, username=user)
     if result.state == CacheState.PREPARING:
         return _prepare_in_flight_response()
+    if result.state == CacheState.SESSION_EXPIRED:
+        return _session_expired_response(SessionExpired(result.error or ""))
     if result.state != CacheState.READY or result.path is None:
         raise HTTPException(
             404, f"no cached file for format={fmt} node_id={node_id}"
@@ -534,6 +569,8 @@ async def download_fetch(
     result = await ensure_cached_or_prefetch(fmt, node_id, username=user)
     if result.state == CacheState.PREPARING:
         return _prepare_in_flight_response()
+    if result.state == CacheState.SESSION_EXPIRED:
+        return _session_expired_response(SessionExpired(result.error or ""))
     if result.state != CacheState.READY or result.path is None:
         raise HTTPException(
             404, f"no cached file for format={fmt} node_id={node_id}"

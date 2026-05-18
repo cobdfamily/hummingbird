@@ -15,6 +15,15 @@ logger = logging.getLogger(__name__)
 _ENTRY_POINT_GROUP = "hummingbird.plugins"
 
 
+class SessionExpired(Exception):
+    """Raised by a plugin hook when its upstream session is no longer
+    valid. The REST and KADOS routers catch this and return HTTP 401
+    so clients can re-authenticate cleanly. Without this signal an
+    expired upstream cookie surfaces as a silent empty bookshelf,
+    which users read as "all my books vanished."
+    """
+
+
 class Plugin(ABC):
     """Hooks a plugin may override. Every hook is optional — a plugin may
     `raise NotImplementedError` to defer to the default backend."""

@@ -160,12 +160,14 @@ def list_resources(cache_path: Path, fmt: int, node_id: int, base_url: str) -> l
 class CacheState(enum.Enum):
     """Result state of ``ensure_cached_or_prefetch``. Routes use this to
     decide between serving the file (READY), responding 503 +
-    Retry-After (PREPARING), or 404 (MISSING / FAILED)."""
+    Retry-After (PREPARING), 404 (MISSING / FAILED), or 401
+    (SESSION_EXPIRED) so the client can re-authenticate."""
 
     READY = "ready"
     PREPARING = "preparing"
     MISSING = "missing"
     FAILED = "failed"
+    SESSION_EXPIRED = "session_expired"
 
 
 @dataclasses.dataclass
@@ -175,12 +177,20 @@ class CacheResult:
     error: str | None = None
 
 
-# (username, fmt, node_id) -> asyncio.Task that's pulling the file from
-# the plugin's upstream into the cache. Tracked process-globally so a
+# (fmt, node_id) -> asyncio.Task that's pulling the file from the
+# plugin's upstream into the cache. Tracked process-globally so a
 # request that comes in while a prefetch is mid-flight observes the
 # in-progress task rather than triggering a duplicate fetch. Cleared
 # when the task completes and a follow-up request consumes the result.
-_INFLIGHT: dict[tuple[str, int, int], asyncio.Task] = {}
+#
+# Keyed on (fmt, node_id) -- NOT on username -- because the cache is
+# content-keyed: two users requesting the same audiobook should share
+# one cached copy and one in-flight fetch, not duplicate the (often
+# multi-GB) download. The plugin's download hook still receives the
+# requesting user so an authenticated upstream session can be used.
+# If that fetch fails the task entry is cleared, so a second user's
+# subsequent request can spawn a fresh task with their own credentials.
+_INFLIGHT: dict[tuple[int, int], asyncio.Task] = {}
 _INFLIGHT_LOCK = asyncio.Lock()
 
 
@@ -188,9 +198,11 @@ async def _run_plugin_prefetch(
     username: str, fmt: int, node_id: int
 ) -> Path | None:
     """Background-task body for a plugin-driven prefetch. Returns the
-    cached path on success, None on failure (logged + swallowed)."""
+    cached path on success, None on failure (logged + swallowed).
+    A SessionExpired raised by the plugin propagates so the caller
+    can map it to HTTP 401."""
     # Lazy import: ``plugins`` imports from us at module init time.
-    from .plugins import active_plugin
+    from .plugins import SessionExpired, active_plugin
 
     plugin = active_plugin()
     if plugin is None:
@@ -201,6 +213,10 @@ async def _run_plugin_prefetch(
         )
     except NotImplementedError:
         return await fetch_from_public_source(fmt, node_id)
+    except SessionExpired:
+        # Don't swallow -- the route layer maps this to 401 so the
+        # client can re-auth instead of seeing a generic FAILED.
+        raise
     except Exception:
         logger.exception(
             "plugin prefetch failed for fmt=%s node_id=%s (user=%s)",
@@ -253,7 +269,7 @@ async def ensure_cached_or_prefetch(
             return CacheResult(state=CacheState.READY, path=public)
         return CacheResult(state=CacheState.MISSING)
 
-    key = (username, fmt, node_id)
+    key = (fmt, node_id)
     async with _INFLIGHT_LOCK:
         task = _INFLIGHT.get(key)
         if task is None:
@@ -268,7 +284,17 @@ async def ensure_cached_or_prefetch(
     # (e.g. cache was pruned in the meantime).
     async with _INFLIGHT_LOCK:
         _INFLIGHT.pop(key, None)
-    if task.cancelled() or task.exception() is not None:
+    if task.cancelled():
+        return CacheResult(state=CacheState.FAILED, error="prefetch cancelled")
+    exc = task.exception()
+    if exc is not None:
+        # Lazy import to avoid the plugins<->download cycle at module init.
+        from .plugins import SessionExpired
+        if isinstance(exc, SessionExpired):
+            return CacheResult(
+                state=CacheState.SESSION_EXPIRED,
+                error=str(exc) or "upstream session expired",
+            )
         return CacheResult(state=CacheState.FAILED, error="prefetch failed")
     result = task.result()
     if isinstance(result, Path):
@@ -298,7 +324,7 @@ async def ensure_cached(
     # credentials.
     if username:
         # Import lazily to avoid a circular dependency at module import.
-        from .plugins import active_plugin
+        from .plugins import SessionExpired, active_plugin
 
         plugin = active_plugin()
         if plugin is not None:
@@ -310,6 +336,10 @@ async def ensure_cached(
                     return fetched
             except NotImplementedError:
                 pass
+            except SessionExpired:
+                # Propagate so the route can map to HTTP 401 instead
+                # of silently falling through to public-source / 404.
+                raise
             except Exception:
                 logger.exception(
                     "plugin download failed for %s/%s (user=%s)", fmt, node_id, username

@@ -17,6 +17,7 @@ from fastapi import APIRouter, Header, HTTPException, Path
 from pydantic import BaseModel, Field
 
 from ...config import kados_settings
+from ...plugins import SessionExpired
 from . import methods
 
 logger = logging.getLogger(__name__)
@@ -97,6 +98,15 @@ async def kados_dispatch(
         )
     except HTTPException:
         raise
+    except SessionExpired as e:
+        # Plugin's upstream session is no longer usable. Drop any
+        # cached token tied to this caller so a follow-up authenticate
+        # call mints a fresh one, then surface 401 -- the
+        # OpenAPIAdapter doc says session-required endpoints MUST 401
+        # so KADOS can re-trigger logOn.
+        if token is not None:
+            _SESSIONS.pop(token, None)
+        raise HTTPException(401, str(e) or "upstream session expired") from e
     except NotImplementedError as e:
         raise HTTPException(501, f"KADOS method {name} is not implemented yet: {e}") from e
     except Exception as e:

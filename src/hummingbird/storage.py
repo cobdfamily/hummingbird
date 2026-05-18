@@ -21,20 +21,51 @@ from .formats import format_label
 from .models import BookRecord, FormatEntry
 
 
+_FORBIDDEN_PATH_CHARS = frozenset("/\\\x00")
+
+
+def _safe_component(name: str | int, *, field: str) -> str:
+    """Reject filesystem-unsafe identifiers before they become part of a path.
+
+    Usernames flow in from HTTP Basic auth and the KADOS Session-token
+    resolver; KADOS contentIds flow in from arbitrary clients (KADOS
+    treats them as opaque strings). Both end up as directory or file
+    names below ``data_dir``. Without this guard a contentId like
+    ``../sessions/admin`` would let a caller write a bookmark to any
+    path the server process can reach. Each component must be non-empty,
+    contain no slashes / backslashes / NUL bytes, and not be a
+    ``.``/``..`` literal.
+    """
+    s = str(name)
+    if not s:
+        raise ValueError(f"{field} must not be empty")
+    if len(s) > 255:
+        raise ValueError(f"{field} exceeds 255 chars")
+    if any(c in _FORBIDDEN_PATH_CHARS for c in s):
+        raise ValueError(f"{field} contains an illegal path character")
+    if s in (".", ".."):
+        raise ValueError(f"{field} is a reserved path component")
+    return s
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 def _shelf_path(username: str) -> Path:
-    return settings.data_dir / "bookshelves" / f"{username}.json"
+    safe = _safe_component(username, field="username")
+    return settings.data_dir / "bookshelves" / f"{safe}.json"
 
 
 def _session_path(username: str) -> Path:
-    return settings.data_dir / "sessions" / f"{username}.json"
+    safe = _safe_component(username, field="username")
+    return settings.data_dir / "sessions" / f"{safe}.json"
 
 
 def _bookmark_path(username: str, content_id: int | str) -> Path:
-    return settings.data_dir / "bookmarks" / username / f"{content_id}.json"
+    safe_user = _safe_component(username, field="username")
+    safe_cid = _safe_component(content_id, field="content_id")
+    return settings.data_dir / "bookmarks" / safe_user / f"{safe_cid}.json"
 
 
 # ---------- bookshelf ----------------------------------------------------
