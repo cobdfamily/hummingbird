@@ -36,6 +36,11 @@ class BookItem(BaseModel):
     due_date: str | None = None
 
 
+class LoginRequest(BaseModel):
+    username: str = ""
+    password: str = ""
+
+
 class LoginResponse(BaseModel):
     authenticated: bool
     username: str
@@ -140,12 +145,14 @@ def _flatten_to_items(books: list[BookRecord], base_url: str) -> list[BookItem]:
 
 
 @router.post("/login", response_model=LoginResponse)
-async def login(
-    username: Annotated[str | None, Query()] = None,
-    password: Annotated[str | None, Query()] = None,
-) -> LoginResponse:
-    user = username or settings.username
-    pw = password or settings.password
+async def login(payload: LoginRequest) -> LoginResponse:
+    # Credentials MUST come in the request body. The previous shape
+    # accepted them as ?username=&password= query params, but query
+    # strings get captured by access logs (uvicorn, Traefik, any CDN
+    # in between, and the user's local Console.app history), which is
+    # plaintext-credential-leak-by-default. Body-only closes that.
+    user = payload.username or settings.username
+    pw = payload.password or settings.password
     if not user or not pw:
         raise HTTPException(
             400, "username and password required (or set HUMMINGBIRD_USERNAME/PASSWORD)"

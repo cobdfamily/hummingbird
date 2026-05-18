@@ -63,21 +63,27 @@ def client(tmp_path, monkeypatch):
 
 
 def test_login_succeeds_with_env_credentials(client):
-    r = client.post("/protocols/hummingbird/v1/login?username=alice&password=secret")
+    r = client.post(
+        "/protocols/hummingbird/v1/login",
+        json={"username": "alice", "password": "secret"},
+    )
     assert r.status_code == 200
     body = r.json()
     assert body["authenticated"] is True
     assert body["username"] == "alice"
 
 
-def test_login_uses_env_defaults_when_no_query_args(client):
-    r = client.post("/protocols/hummingbird/v1/login")
+def test_login_uses_env_defaults_when_no_body_args(client):
+    r = client.post("/protocols/hummingbird/v1/login", json={})
     assert r.status_code == 200
     assert r.json()["authenticated"] is True
 
 
 def test_login_rejects_wrong_password(client):
-    r = client.post("/protocols/hummingbird/v1/login?username=alice&password=wrong")
+    r = client.post(
+        "/protocols/hummingbird/v1/login",
+        json={"username": "alice", "password": "wrong"},
+    )
     assert r.status_code == 401
 
 
@@ -91,8 +97,20 @@ def test_login_400_when_no_credentials(client, monkeypatch):
     import hummingbird.main as main
     importlib.reload(main)
     fresh = TestClient(main.app)
-    r = fresh.post("/protocols/hummingbird/v1/login")
+    r = fresh.post("/protocols/hummingbird/v1/login", json={})
     assert r.status_code == 400
+
+
+def test_login_query_string_credentials_no_longer_accepted(client):
+    """The old ?username=&password= shape used to work; it now fails
+    because credentials in the URL get captured by every access log
+    in the request path (uvicorn, reverse proxies, CDN, the user's
+    own Console.app). Body-only is the supported shape -- FastAPI
+    returns 422 when the body is absent."""
+    r = client.post(
+        "/protocols/hummingbird/v1/login?username=alice&password=secret"
+    )
+    assert r.status_code == 422
 
 
 # ---------------------------------------------------------------------------

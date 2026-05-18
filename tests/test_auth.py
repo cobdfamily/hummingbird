@@ -229,7 +229,8 @@ def test_login_populates_cache(plugin_client):
     hit doesn't re-trigger plugin.authenticate."""
     client, plugin, _ = plugin_client
     r = client.post(
-        "/protocols/hummingbird/v1/login?username=bob&password=pw"
+        "/protocols/hummingbird/v1/login",
+        json={"username": "bob", "password": "pw"},
     )
     assert r.status_code == 200
     assert plugin.auth_calls == 1

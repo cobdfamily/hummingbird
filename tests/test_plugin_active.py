@@ -153,7 +153,10 @@ def app_with_plugin(tmp_path, monkeypatch):
 def test_login_plugin_authenticate_success(app_with_plugin):
     client, plugin = app_with_plugin
     plugin.authenticate_returns = True
-    r = client.post("/protocols/hummingbird/v1/login?username=u&password=p")
+    r = client.post(
+        "/protocols/hummingbird/v1/login",
+        json={"username": "u", "password": "p"},
+    )
     assert r.status_code == 200
     assert r.json()["authenticated"] is True
     # And the plugin saw the right credentials.
@@ -163,7 +166,10 @@ def test_login_plugin_authenticate_success(app_with_plugin):
 def test_login_plugin_authenticate_failure(app_with_plugin):
     client, plugin = app_with_plugin
     plugin.authenticate_returns = False
-    r = client.post("/protocols/hummingbird/v1/login?username=u&password=p")
+    r = client.post(
+        "/protocols/hummingbird/v1/login",
+        json={"username": "u", "password": "p"},
+    )
     assert r.status_code == 401
 
 
@@ -174,10 +180,16 @@ def test_login_plugin_not_implemented_falls_back_to_env(app_with_plugin):
     client, plugin = app_with_plugin
     plugin.authenticate_returns = NotImplementedError
     # Env creds (alice/secret per fixture) match -> success.
-    r = client.post("/protocols/hummingbird/v1/login?username=alice&password=secret")
+    r = client.post(
+        "/protocols/hummingbird/v1/login",
+        json={"username": "alice", "password": "secret"},
+    )
     assert r.status_code == 200
     # Wrong creds via the env fallback -> 401.
-    r = client.post("/protocols/hummingbird/v1/login?username=alice&password=nope")
+    r = client.post(
+        "/protocols/hummingbird/v1/login",
+        json={"username": "alice", "password": "nope"},
+    )
     assert r.status_code == 401
 
 
