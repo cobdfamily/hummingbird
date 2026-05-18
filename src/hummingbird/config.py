@@ -46,6 +46,15 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8000
 
+    # The public URL operators expose this server at (eg.
+    # https://hummingbird.example.com). KADOS clients don't carry an
+    # HTTP base URL through the request, so when we emit absolute URIs
+    # from the KADOS surface (eg. ``getContentResources``) we have to
+    # know the public URL ahead of time. Default empty -> relative
+    # URIs; clients prepend their own base. Set
+    # HUMMINGBIRD_PUBLIC_BASE_URL in production.
+    public_base_url: str = ""
+
 
 settings = Settings()
 settings.data_dir.mkdir(parents=True, exist_ok=True)

@@ -19,7 +19,7 @@ from pydantic import BaseModel
 from ... import auth as auth_module
 from ... import storage
 from ...config import settings
-from ...download import ensure_cached
+from ...download import ensure_cached, list_resources
 from ...models import BookRecord, SearchResult
 from ...plugins import active_plugin
 
@@ -93,6 +93,19 @@ class DownloadListing(BaseModel):
     kind: str  # "archive" | "single"
     files: list[str]
     count: int
+
+
+class ResourceItem(BaseModel):
+    uri: str
+    mimeType: str
+    size: int
+    localURI: str
+
+
+class ResourcesResponse(BaseModel):
+    contentId: str
+    format: int
+    resources: list[ResourceItem]
 
 
 # ---------- helpers -------------------------------------------------------
@@ -291,6 +304,41 @@ async def bookmark_set(
     ok = storage.write_bookmark(user, node_id, payload.bookmark or {})
     return BookmarkActionResponse(
         username=user, node_id=node_id, action="set", success=ok
+    )
+
+
+# ---------- /resources ----------------------------------------------------
+#
+# DODP-shaped resource list for a single (fmt, content) pair. Both the
+# Hummingbird REST surface (this route) and the KADOS RPC method
+# ``getContentResources`` consume the same `download.list_resources()`
+# helper, so DODP clients hitting the KADOS endpoint and BookPlayer
+# hitting this REST endpoint get exactly the same shape.
+
+
+@router.get(
+    "/resources/{fmt}/{node_id}", response_model=ResourcesResponse
+)
+@router.get(
+    "/resources/{fmt}/{node_id}/", response_model=ResourcesResponse,
+    include_in_schema=False,
+)
+async def resources_endpoint(
+    request: Request,
+    fmt: int,
+    node_id: int,
+    user: str = Depends(auth_module.current_user),
+) -> ResourcesResponse:
+    cache = await ensure_cached(fmt, node_id, username=user)
+    if cache is None:
+        raise HTTPException(
+            404, f"no cached file for format={fmt} node_id={node_id}"
+        )
+    resources = list_resources(cache, fmt, node_id, _base_url(request))
+    return ResourcesResponse(
+        contentId=str(node_id),
+        format=fmt,
+        resources=[ResourceItem(**r) for r in resources],
     )
 
 

@@ -418,6 +418,68 @@ def test_content_issuable_default_false(client):
 # ---------------------------------------------------------------------------
 
 
+def test_content_resources_returns_archive_entries(client, tmp_path, monkeypatch):
+    """KADOS getContentResources returns the same DODP-shaped resource
+    list as the REST /resources endpoint -- one entry per file in the
+    cached archive, each with uri/mimeType/size/localURI."""
+    monkeypatch.setenv("HUMMINGBIRD_PUBLIC_BASE_URL", "https://hummingbird.example.com")
+    # Force a config reload + handlers + main reload.
+    import importlib
+    import hummingbird.config as config
+    importlib.reload(config)
+    import hummingbird.download as download
+    importlib.reload(download)
+    import hummingbird.protocols.kados.methods as kd_methods
+    importlib.reload(kd_methods)
+    import hummingbird.protocols.kados.router as kd_router
+    importlib.reload(kd_router)
+    import hummingbird.protocols.hummingbird.router as hb_router
+    importlib.reload(hb_router)
+    import hummingbird.main as main
+    importlib.reload(main)
+    fresh = TestClient(main.app)
+    fresh.headers.update({"Authorization": "Basic YWxpY2U6c2VjcmV0"})
+
+    # Stage a zip into the cache for fmt=11 node=300.
+    import zipfile
+    from io import BytesIO
+    cache_dir = download.cache_dir_for(11, 300)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    buf = BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("ncc.html", "<html/>")
+        z.writestr("audio/01.mp3", b"audio")
+    (cache_dir / "book.zip").write_bytes(buf.getvalue())
+
+    # KADOS authentication first (gets a session token).
+    token = _authenticate(fresh)
+    r = _call(
+        fresh, "contentResources",
+        {"contentId": 300, "format": 11},
+        headers=_session_headers(token),
+    )
+    body = r.json()["data"]
+    paths = {res["localURI"] for res in body["resources"]}
+    assert paths == {"ncc.html", "audio/01.mp3"}
+    for res in body["resources"]:
+        assert res["uri"].startswith("https://hummingbird.example.com/")
+
+
+def test_content_resources_anon_returns_empty(client):
+    r = _call(client, "contentResources", {"contentId": 300})
+    body = r.json()["data"]
+    assert body["resources"] == []
+
+
+def test_content_resources_bad_content_id_returns_empty(client):
+    token = _authenticate(client)
+    r = _call(
+        client, "contentResources", {"contentId": "not-a-number"},
+        headers=_session_headers(token),
+    )
+    assert r.json()["data"]["resources"] == []
+
+
 def test_content_return_date_via_storage(client):
     """contentReturnDate reads the per-book due_date persisted in
     storage. None for books with no loan period."""

@@ -111,6 +111,49 @@ async def fetch_from_public_source(fmt: int, node_id: int) -> Path | None:
             return None
 
 
+def list_resources(cache_path: Path, fmt: int, node_id: int, base_url: str) -> list[dict]:
+    """Enumerate DODP-shaped resources from a cached file.
+
+    For a single-file cache (e.g. an MP3) -> a one-element list. For a
+    zip archive (e.g. a DAISY 2.02 audio book) -> one entry per file
+    inside the archive. Each resource has the four DODP fields the
+    KADOS ``getContentResources`` method returns: ``uri``, ``mimeType``,
+    ``size``, ``localURI``. Callers (KADOS handler / REST endpoint /
+    BookPlayer) consume the same shape.
+
+    Audio-only filtering is the *client's* job -- we return everything
+    so DODP-aware clients can still navigate by SMIL.
+    """
+    import mimetypes as _mt
+    import zipfile as _zf
+
+    out: list[dict] = []
+    download_prefix = f"{base_url.rstrip('/')}/protocols/hummingbird/v1/download/{fmt}/{node_id}"
+
+    if cache_path.suffix.lower() == ".zip":
+        with _zf.ZipFile(cache_path) as z:
+            for info in z.infolist():
+                if info.is_dir():
+                    continue
+                mime, _ = _mt.guess_type(info.filename)
+                out.append({
+                    "uri": f"{download_prefix}/{info.filename}",
+                    "mimeType": mime or "application/octet-stream",
+                    "size": info.file_size,
+                    "localURI": info.filename,
+                })
+    else:
+        # Single-file cache: one resource pointing at the cached file.
+        mime, _ = _mt.guess_type(cache_path.name)
+        out.append({
+            "uri": f"{download_prefix}/{cache_path.name}",
+            "mimeType": mime or "application/octet-stream",
+            "size": cache_path.stat().st_size,
+            "localURI": cache_path.name,
+        })
+    return out
+
+
 async def ensure_cached(
     fmt: int, node_id: int, *, username: str | None = None
 ) -> Path | None:

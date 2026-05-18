@@ -126,11 +126,68 @@ async def _content_metadata(data: dict, user: str | None, **_) -> dict:
 
 @method("contentResources")
 async def _content_resources(data: dict, user: str | None, **_) -> dict:
-    cid = data.get("contentId")
+    """DODP-style ``getContentResources``: returns the list of resources
+    (audio, SMIL, NCC, etc) the client should fetch to assemble the
+    content item locally. Each resource is ``{uri, mimeType, size,
+    localURI}`` -- the same shape the Hummingbird REST
+    ``/resources/{fmt}/{node_id}`` route returns. Both go through the
+    same ``download.list_resources`` helper.
+
+    ``contentId`` here is the NNELS node_id. A book usually has
+    multiple formats (MP3, DAISY 202 Audio, BRF) and we have to pick
+    one to enumerate. The accompanying ``format`` field in the data
+    payload picks a specific one; if absent, we prefer DAISY 202
+    Audio (format 11) so DAISY clients get the full structure, and
+    fall back to MP3 (format 4) for clients that just want flat
+    audio.
+    """
+    from ...download import ensure_cached, list_resources
+
+    cid_raw = data.get("contentId")
+    if cid_raw is None or not user:
+        return {
+            "returnBy": None,
+            "resources": [],
+            "metadata": {"dc:identifier": str(cid_raw) if cid_raw is not None else ""},
+        }
+    try:
+        cid = int(cid_raw)
+    except (TypeError, ValueError):
+        return {
+            "returnBy": None,
+            "resources": [],
+            "metadata": {"dc:identifier": str(cid_raw)},
+        }
+
+    # Allow the client to specify a format; default to DAISY 202 Audio
+    # then MP3. KADOS clients that follow strict DODP don't usually
+    # send `format` so we pick a sensible default; Hummingbird-aware
+    # clients can override.
+    fmt = data.get("format")
+    if fmt is None:
+        fmt = 11
+    try:
+        fmt = int(fmt)
+    except (TypeError, ValueError):
+        fmt = 11
+
+    cache = await ensure_cached(fmt, cid, username=user)
+    # KADOS clients don't carry an HTTP request, so we don't know the
+    # public base URL -- emit relative URIs. Clients prepend their
+    # base. (The REST endpoint that knows the base URL emits absolute
+    # URIs.)
+    base_url = settings.public_base_url
+    if cache is None:
+        return {
+            "returnBy": None,
+            "resources": [],
+            "metadata": {"dc:identifier": str(cid)},
+        }
+    resources = list_resources(cache, fmt, cid, base_url)
     return {
         "returnBy": None,
-        "resources": [],
-        "metadata": {"dc:identifier": str(cid) if cid is not None else ""},
+        "resources": resources,
+        "metadata": {"dc:identifier": str(cid)},
     }
 
 

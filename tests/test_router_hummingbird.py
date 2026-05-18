@@ -357,6 +357,64 @@ def test_download_info_zip_archive(client, tmp_path):
     assert "audio/01.mp3" in body["files"]
 
 
+# ---------------------------------------------------------------------------
+# /resources -- DODP-shaped per-content resource list (the canonical
+# manifest BookPlayer and other clients use to drive multi-file downloads)
+# ---------------------------------------------------------------------------
+
+
+def test_resources_single_file(client, tmp_path):
+    _drop_into_cache(tmp_path, 4, 100, "song.mp3", b"AUDIO")
+    r = client.get("/protocols/hummingbird/v1/resources/4/100")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["contentId"] == "100"
+    assert body["format"] == 4
+    assert len(body["resources"]) == 1
+    res = body["resources"][0]
+    assert res["mimeType"] == "audio/mpeg"
+    assert res["localURI"] == "song.mp3"
+    assert res["size"] == 5
+    assert res["uri"].endswith("/protocols/hummingbird/v1/download/4/100/song.mp3")
+
+
+def test_resources_zip_archive_lists_each_entry(client, tmp_path):
+    """A DAISY 2.02 zip becomes one resource per file in the archive --
+    audio, smil, ncc all enumerated separately so DODP-aware clients
+    can see the structure. (Audio-only filtering is the client's
+    job; the server emits everything.)"""
+    buf = BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("ncc.html", "<html></html>")
+        z.writestr("book.smil", "<smil/>")
+        z.writestr("audio/01.mp3", b"audio1")
+        z.writestr("audio/02.mp3", b"audio2")
+    _drop_into_cache(tmp_path, 11, 200, "book.zip", buf.getvalue())
+    r = client.get("/protocols/hummingbird/v1/resources/11/200")
+    assert r.status_code == 200
+    body = r.json()
+    resources = body["resources"]
+    paths = {res["localURI"] for res in resources}
+    assert paths == {"ncc.html", "book.smil", "audio/01.mp3", "audio/02.mp3"}
+    # Verify mime types of the audio entries:
+    audio = [r for r in resources if r["mimeType"] == "audio/mpeg"]
+    assert len(audio) == 2
+    # And the URIs are absolute and properly built:
+    for res in audio:
+        assert res["uri"].endswith(f"/protocols/hummingbird/v1/download/11/200/{res['localURI']}")
+
+
+def test_resources_404_when_no_cache(client):
+    r = client.get("/protocols/hummingbird/v1/resources/4/999")
+    assert r.status_code == 404
+
+
+def test_resources_requires_auth(client):
+    fresh = TestClient(client.app)  # no default headers
+    r = fresh.get("/protocols/hummingbird/v1/resources/4/100")
+    assert r.status_code == 401
+
+
 def test_download_fetch_single_file(client, tmp_path):
     _drop_into_cache(tmp_path, 4, 100, "song.mp3", b"AUDIO-DATA")
     r = client.get("/protocols/hummingbird/v1/download/4/100/song.mp3")
