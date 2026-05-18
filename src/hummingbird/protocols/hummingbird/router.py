@@ -12,10 +12,11 @@ import zipfile
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
+from ... import auth as auth_module
 from ... import storage
 from ...config import settings
 from ...download import ensure_cached
@@ -112,13 +113,6 @@ def _is_zip_archive(path: Path) -> bool:
     return path.suffix.lower() == ".zip"
 
 
-def _require_username(username: str | None) -> str:
-    user = username or settings.username
-    if not user:
-        raise HTTPException(400, "username required (or set HUMMINGBIRD_USERNAME)")
-    return user
-
-
 def _base_url(request: Request) -> str:
     return str(request.base_url).rstrip("/")
 
@@ -165,12 +159,16 @@ async def login(
             if not ok:
                 raise HTTPException(401, "authentication failed")
             storage.write_session(user, via="plugin")
+            # Populate the auth cache so subsequent REST hits within
+            # TTL don't re-trigger the plugin's expensive authenticate.
+            auth_module.remember_login(user, pw)
             return LoginResponse(authenticated=True, username=user)
 
     # Standalone fallback: match .env credentials.
     if user != settings.username or pw != settings.password:
         raise HTTPException(401, "authentication failed")
     storage.write_session(user, via="env")
+    auth_module.remember_login(user, pw)
     return LoginResponse(authenticated=True, username=user)
 
 
@@ -180,9 +178,8 @@ async def login(
 @router.get("/bookshelf/list", response_model=BookshelfListResponse)
 async def bookshelf_list(
     request: Request,
-    username: Annotated[str | None, Query()] = None,
+    user: str = Depends(auth_module.current_user),
 ) -> BookshelfListResponse:
-    user = _require_username(username)
     plugin = active_plugin()
     if plugin is not None:
         try:
@@ -198,11 +195,10 @@ async def bookshelf_list(
 @router.post("/bookshelf/add/{node_id}", response_model=ShelfActionResponse)
 async def bookshelf_add(
     node_id: int,
-    username: Annotated[str | None, Query()] = None,
+    user: str = Depends(auth_module.current_user),
     format: Annotated[int, Query(ge=0, description="standalone only; plugin ignores")] = 0,
     title: Annotated[str, Query(description="standalone only; plugin ignores")] = "",
 ) -> ShelfActionResponse:
-    user = _require_username(username)
     plugin = active_plugin()
     if plugin is not None:
         try:
@@ -219,10 +215,9 @@ async def bookshelf_add(
 @router.post("/bookshelf/remove/{node_id}", response_model=ShelfActionResponse)
 async def bookshelf_remove(
     node_id: int,
-    username: Annotated[str | None, Query()] = None,
+    user: str = Depends(auth_module.current_user),
     format: Annotated[int | None, Query(description="standalone only; plugin ignores")] = None,
 ) -> ShelfActionResponse:
-    user = _require_username(username)
     plugin = active_plugin()
     if plugin is not None:
         try:
@@ -251,9 +246,8 @@ async def bookshelf_remove(
 )
 async def bookmark_get(
     node_id: int,
-    username: Annotated[str | None, Query()] = None,
+    user: str = Depends(auth_module.current_user),
 ) -> BookmarkResponse:
-    user = _require_username(username)
     plugin = active_plugin()
     if plugin is not None:
         try:
@@ -274,9 +268,8 @@ async def bookmark_get(
 async def bookmark_set(
     node_id: int,
     payload: BookmarkRequest,
-    username: Annotated[str | None, Query()] = None,
+    user: str = Depends(auth_module.current_user),
 ) -> BookmarkActionResponse:
-    user = _require_username(username)
     plugin = active_plugin()
     if plugin is not None:
         try:
@@ -305,9 +298,8 @@ async def search_endpoint(
         Query(description="restrict to these format ids; repeat param: ?formats=1&formats=2"),
     ] = None,
     page: Annotated[int, Query(ge=0)] = 0,
-    username: Annotated[str | None, Query()] = None,
+    user: str = Depends(auth_module.current_user),
 ) -> SearchResponse:
-    user = _require_username(username)
     plugin = active_plugin()
     if plugin is not None:
         try:

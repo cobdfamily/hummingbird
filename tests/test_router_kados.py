@@ -8,6 +8,7 @@ bookmarks, stubs).
 
 from __future__ import annotations
 
+import base64
 import importlib
 
 import pytest
@@ -24,6 +25,7 @@ def _build_client(tmp_path, monkeypatch, *, api_key: str = ""):
         monkeypatch.setenv("KADOS_API_KEY", api_key)
     else:
         monkeypatch.delenv("KADOS_API_KEY", raising=False)
+    import hummingbird.auth as auth
     import hummingbird.config as config
     import hummingbird.download as download
     import hummingbird.plugins as plugins
@@ -32,6 +34,7 @@ def _build_client(tmp_path, monkeypatch, *, api_key: str = ""):
     importlib.reload(storage)
     importlib.reload(download)
     importlib.reload(plugins)
+    importlib.reload(auth)
     import hummingbird.protocols.kados.methods as kd_methods
     import hummingbird.protocols.kados.router as kd_router
     import hummingbird.protocols.hummingbird.router as hb_router
@@ -40,7 +43,13 @@ def _build_client(tmp_path, monkeypatch, *, api_key: str = ""):
     importlib.reload(hb_router)
     import hummingbird.main as main
     importlib.reload(main)
-    return TestClient(main.app), kd_router
+    tc = TestClient(main.app)
+    # Pre-populate the auth cache + default Basic header so setup calls
+    # via the hummingbird REST surface still work for these KADOS tests.
+    token = base64.b64encode(b"alice:secret").decode()
+    tc.headers.update({"Authorization": f"Basic {token}"})
+    auth.remember_login("alice", "secret")
+    return tc, kd_router
 
 
 @pytest.fixture

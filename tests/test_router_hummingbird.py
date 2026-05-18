@@ -4,6 +4,7 @@ authentication, JSON-backed default storage."""
 
 from __future__ import annotations
 
+import base64
 import importlib
 import zipfile
 from io import BytesIO
@@ -12,16 +13,29 @@ import pytest
 from fastapi.testclient import TestClient
 
 
+def _basic_auth(user: str, pw: str) -> dict[str, str]:
+    token = base64.b64encode(f"{user}:{pw}".encode()).decode()
+    return {"Authorization": f"Basic {token}"}
+
+
+# Default Basic auth for env-defined credentials in the standalone fixture.
+AUTH = _basic_auth("alice", "secret")
+
+
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     """Reload config + the whole module tree so settings.{data,cache}_dir
-    point at a per-test tmp dir."""
+    point at a per-test tmp dir. Pre-populates the auth cache with
+    alice/secret so existing tests can hit REST routes without having to
+    build a Basic auth header per request -- a dedicated test file
+    exercises the real auth dependency."""
     monkeypatch.setenv("HUMMINGBIRD_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("HUMMINGBIRD_CACHE_DIR", str(tmp_path / "cache"))
     monkeypatch.setenv("HUMMINGBIRD_USERNAME", "alice")
     monkeypatch.setenv("HUMMINGBIRD_PASSWORD", "secret")
     monkeypatch.setenv("HUMMINGBIRD_PLUGIN", "")
     monkeypatch.delenv("HUMMINGBIRD_PUBLIC_CONTENT_URL", raising=False)
+    import hummingbird.auth as auth
     import hummingbird.config as config
     import hummingbird.download as download
     import hummingbird.plugins as plugins
@@ -30,13 +44,17 @@ def client(tmp_path, monkeypatch):
     importlib.reload(storage)
     importlib.reload(download)
     importlib.reload(plugins)
+    importlib.reload(auth)
     import hummingbird.protocols.hummingbird.router as hb_router
     import hummingbird.protocols.kados.router as kd_router
     importlib.reload(hb_router)
     importlib.reload(kd_router)
     import hummingbird.main as main
     importlib.reload(main)
-    return TestClient(main.app)
+    tc = TestClient(main.app)
+    tc.headers.update(AUTH)
+    auth.remember_login("alice", "secret")
+    return tc
 
 
 # ---------------------------------------------------------------------------
@@ -137,9 +155,9 @@ def test_bookshelf_remove_no_format_drops_all(client):
     assert r.json()["count"] == 0
 
 
-def test_bookshelf_uses_settings_username_when_query_omits(client):
-    # HUMMINGBIRD_USERNAME=alice in the fixture — calling without
-    # ?username= should still resolve to alice.
+def test_bookshelf_username_comes_from_basic_auth(client):
+    # Basic auth carries alice/secret per the fixture; ?username= is
+    # ignored. The route resolves the user from the Authorization header.
     client.post(
         "/protocols/hummingbird/v1/bookshelf/add/7?format=4&title=Y"
     )
@@ -149,17 +167,14 @@ def test_bookshelf_uses_settings_username_when_query_omits(client):
     assert r.json()["count"] == 1
 
 
-def test_bookshelf_400_when_no_username_anywhere(client, monkeypatch):
-    monkeypatch.delenv("HUMMINGBIRD_USERNAME", raising=False)
-    import hummingbird.config as config
-    import hummingbird.protocols.hummingbird.router as hb_router
-    importlib.reload(config)
-    importlib.reload(hb_router)
-    import hummingbird.main as main
-    importlib.reload(main)
-    fresh = TestClient(main.app)
+def test_bookshelf_401_when_no_auth(client):
+    """Stripping the Authorization header -> the dependency rejects with
+    401 + WWW-Authenticate: Basic. (The old behaviour was 400-when-no-
+    username; that path is gone now that the username comes from auth.)"""
+    fresh = TestClient(client.app)  # no default headers
     r = fresh.get("/protocols/hummingbird/v1/bookshelf/list")
-    assert r.status_code == 400
+    assert r.status_code == 401
+    assert r.headers.get("WWW-Authenticate") == "Basic"
 
 
 # ---------------------------------------------------------------------------
@@ -204,20 +219,13 @@ def test_bookmark_set_with_no_payload_field_still_persists(client):
     assert r.json()["success"] is True
 
 
-def test_bookmark_set_400_when_no_username_anywhere(client, monkeypatch):
-    monkeypatch.delenv("HUMMINGBIRD_USERNAME", raising=False)
-    import hummingbird.config as config
-    import hummingbird.protocols.hummingbird.router as hb_router
-    importlib.reload(config)
-    importlib.reload(hb_router)
-    import hummingbird.main as main
-    importlib.reload(main)
-    fresh = TestClient(main.app)
+def test_bookmark_set_401_when_no_auth(client):
+    fresh = TestClient(client.app)  # no default headers
     r = fresh.post(
         "/protocols/hummingbird/v1/bookshelf/bookmark/42",
         json={"bookmark": {"currentTime": 1.0}},
     )
-    assert r.status_code == 400
+    assert r.status_code == 401
 
 
 # ---------------------------------------------------------------------------

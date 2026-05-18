@@ -10,6 +10,7 @@ on success, fall through to default storage on
 
 from __future__ import annotations
 
+import base64
 import importlib
 
 import pytest
@@ -97,6 +98,7 @@ def app_with_plugin(tmp_path, monkeypatch):
     monkeypatch.delenv("HUMMINGBIRD_PUBLIC_CONTENT_URL", raising=False)
     monkeypatch.delenv("KADOS_API_KEY", raising=False)
 
+    import hummingbird.auth as auth
     import hummingbird.config as config
     import hummingbird.download as download
     import hummingbird.plugins as plugins
@@ -105,6 +107,7 @@ def app_with_plugin(tmp_path, monkeypatch):
     importlib.reload(storage)
     importlib.reload(download)
     importlib.reload(plugins)
+    importlib.reload(auth)
     import hummingbird.protocols.kados.methods as kd_methods
     import hummingbird.protocols.kados.router as kd_router
     import hummingbird.protocols.hummingbird.router as hb_router
@@ -120,7 +123,14 @@ def app_with_plugin(tmp_path, monkeypatch):
     plugins._active = fake
     plugins._loaded = True
 
-    return TestClient(main.app), fake
+    tc = TestClient(main.app)
+    # Pre-populate the auth cache + default Basic header so existing
+    # tests can hit REST routes; the dedicated auth test file exercises
+    # the real dependency.
+    token = base64.b64encode(b"alice:secret").decode()
+    tc.headers.update({"Authorization": f"Basic {token}"})
+    auth.remember_login("alice", "secret")
+    return tc, fake
 
 
 # ---------------------------------------------------------------------------
@@ -185,7 +195,9 @@ def test_bookshelf_list_via_plugin(app_with_plugin):
     titles = [item["title"] for item in body["items"]]
     assert any("Moby Dick" in t and "Pat Bottoms" in t for t in titles)
     assert any("War and Peace" in t for t in titles)
-    assert plugin.calls[-1] == ("list_bookshelf", ("u",))
+    # Username comes from the Basic auth header (alice/secret in the
+    # fixture), not from the ?username=u query param (which is ignored).
+    assert plugin.calls[-1] == ("list_bookshelf", ("alice",))
 
 
 def test_bookshelf_list_plugin_not_implemented_falls_back_to_storage(app_with_plugin):
@@ -206,7 +218,7 @@ def test_bookshelf_add_via_plugin_returns_success_flag(app_with_plugin):
     body = r.json()
     assert body["success"] is True
     assert body["action"] == "add"
-    assert plugin.calls[-1] == ("add_to_bookshelf", ("u", 42))
+    assert plugin.calls[-1] == ("add_to_bookshelf", ("alice", 42))
 
 
 def test_bookshelf_add_plugin_not_implemented_falls_through(app_with_plugin):
@@ -233,7 +245,7 @@ def test_bookshelf_remove_via_plugin(app_with_plugin):
     body = r.json()
     assert body["success"] is True
     assert body["action"] == "remove"
-    assert plugin.calls[-1] == ("remove_from_bookshelf", ("u", 42))
+    assert plugin.calls[-1] == ("remove_from_bookshelf", ("alice", 42))
 
 
 def test_bookshelf_remove_plugin_not_implemented_falls_through(app_with_plugin):
@@ -264,7 +276,7 @@ def test_search_via_plugin_returns_books(app_with_plugin):
     assert body["count"] == 1
     assert body["total_pages"] == 1
     assert body["total_results"] == 1
-    assert plugin.calls[-1] == ("search", ("u", "moby", None, 0))
+    assert plugin.calls[-1] == ("search", ("alice", "moby", None, 0))
 
 
 def test_search_via_plugin_with_formats_filter_applies_in_route(app_with_plugin):
@@ -488,7 +500,7 @@ def test_rest_bookmark_set_via_plugin(app_with_plugin):
     assert body["success"] is True
     assert body["action"] == "set"
     assert plugin.calls[-1] == (
-        "set_bookmark", ("u", 42, {"currentTime": 12.5})
+        "set_bookmark", ("alice", 42, {"currentTime": 12.5})
     )
 
 
@@ -519,7 +531,7 @@ def test_rest_bookmark_get_via_plugin(app_with_plugin):
     assert r.status_code == 200
     body = r.json()
     assert body["bookmark"] == {"position": "smil-1#p3"}
-    assert plugin.calls[-1] == ("get_bookmark", ("u", 42))
+    assert plugin.calls[-1] == ("get_bookmark", ("alice", 42))
 
 
 def test_rest_bookmark_get_plugin_returns_none_normalizes_to_empty(app_with_plugin):
