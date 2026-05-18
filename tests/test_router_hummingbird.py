@@ -300,14 +300,41 @@ def _drop_into_cache(tmp_path, fmt: int, node_id: int, name: str, content: bytes
     return d / name
 
 
-def test_download_listing_404_when_no_cache(client):
+def test_download_file_404_when_no_cache(client):
     r = client.get("/protocols/hummingbird/v1/download/4/999/")
     assert r.status_code == 404
 
 
-def test_download_listing_single_file(client, tmp_path):
-    _drop_into_cache(tmp_path, 4, 100, "song.mp3", b"AUDIO")
+def test_download_file_returns_bytes_for_single_file(client, tmp_path):
+    """The trailing-slash URL serves the actual cached file -- this is
+    what BookItem.url points to so clients can do a single blind GET
+    and get audio bytes (or a DAISY zip)."""
+    _drop_into_cache(tmp_path, 4, 100, "song.mp3", b"AUDIO-DATA")
     r = client.get("/protocols/hummingbird/v1/download/4/100/")
+    assert r.status_code == 200
+    assert r.content == b"AUDIO-DATA"
+    assert "json" not in r.headers.get("content-type", "")
+
+
+def test_download_file_returns_zip_archive(client, tmp_path):
+    """Archive-format books: the trailing-slash URL serves the whole
+    .zip back as-is. DAISY-aware clients extract locally."""
+    buf = BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("ncc.html", "<html></html>")
+        z.writestr("audio/01.mp3", b"audio1")
+    _drop_into_cache(tmp_path, 11, 200, "book.zip", buf.getvalue())
+    r = client.get("/protocols/hummingbird/v1/download/11/200/")
+    assert r.status_code == 200
+    # We get the .zip back as bytes, not a JSON listing.
+    assert r.content[:2] == b"PK"  # zip magic
+
+
+def test_download_info_single_file(client, tmp_path):
+    """Moved listing JSON lives at /_info now -- DAISY clients can hit
+    it to inspect archive contents before fetching individual entries."""
+    _drop_into_cache(tmp_path, 4, 100, "song.mp3", b"AUDIO")
+    r = client.get("/protocols/hummingbird/v1/download/4/100/_info")
     assert r.status_code == 200
     body = r.json()
     assert body["kind"] == "single"
@@ -316,18 +343,16 @@ def test_download_listing_single_file(client, tmp_path):
     assert body["count"] == 1
 
 
-def test_download_listing_zip_archive(client, tmp_path):
-    """A .zip in the cache is reported as kind=archive with member list."""
+def test_download_info_zip_archive(client, tmp_path):
     buf = BytesIO()
     with zipfile.ZipFile(buf, "w") as z:
         z.writestr("ncc.html", "<html></html>")
         z.writestr("audio/01.mp3", b"audio1")
     _drop_into_cache(tmp_path, 11, 200, "book.zip", buf.getvalue())
-    r = client.get("/protocols/hummingbird/v1/download/11/200/")
+    r = client.get("/protocols/hummingbird/v1/download/11/200/_info")
     assert r.status_code == 200
     body = r.json()
     assert body["kind"] == "archive"
-    assert body["filename"] == "book.zip"
     assert "ncc.html" in body["files"]
     assert "audio/01.mp3" in body["files"]
 

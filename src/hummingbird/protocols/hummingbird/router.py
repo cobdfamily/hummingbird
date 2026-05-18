@@ -372,15 +372,29 @@ def _stream_zip_entry(zip_path: Path, inner_path: str) -> StreamingResponse:
     )
 
 
-@router.get("/download/{fmt}/{node_id}/", response_model=DownloadListing)
-@router.get("/download/{fmt}/{node_id}", response_model=DownloadListing)
-async def download_listing(
+@router.get(
+    "/download/{fmt}/{node_id}/_info",
+    response_model=DownloadListing,
+)
+@router.get(
+    "/download/{fmt}/{node_id}/_info/",
+    response_model=DownloadListing,
+    include_in_schema=False,
+)
+async def download_info(
     fmt: int,
     node_id: int,
     user: str = Depends(auth_module.current_user),
 ) -> DownloadListing:
-    # ``user`` is needed so the plugin path can authenticate the upstream
-    # fetch (NNELS gates the file behind a per-user Playwright session).
+    """Return JSON metadata describing the cached file (single vs archive,
+    filename, list of contents). Useful for DAISY-aware clients that want
+    to inspect a DAISY 2.02 archive before fetching individual entries.
+
+    Lived at ``/download/{fmt}/{node_id}/`` until v0.3.2 -- but clients
+    like BookPlayer followed that URL blindly and got back JSON when
+    they expected audio bytes, so the URL we hand out in /bookshelf/list
+    now points at the file route below; this one's the explicit
+    inspection path."""
     cache = await ensure_cached(fmt, node_id, username=user)
     if cache is None:
         raise HTTPException(
@@ -397,6 +411,26 @@ async def download_listing(
         format=fmt, node_id=node_id, filename=cache.name,
         kind=kind, files=files, count=len(files),
     )
+
+
+@router.get("/download/{fmt}/{node_id}/")
+@router.get("/download/{fmt}/{node_id}")
+async def download_file(
+    fmt: int,
+    node_id: int,
+    user: str = Depends(auth_module.current_user),
+):
+    """Serve the cached file (or zip archive) for (fmt, node_id) as
+    bytes. Populates the cache via the plugin path if needed. This is
+    what `BookItem.url` points at so the client can do a single
+    blind GET and receive playable audio (or a DAISY zip the client
+    can extract locally)."""
+    cache = await ensure_cached(fmt, node_id, username=user)
+    if cache is None:
+        raise HTTPException(
+            404, f"no cached file for format={fmt} node_id={node_id}"
+        )
+    return FileResponse(cache, media_type=_guess_mime(cache.name), filename=cache.name)
 
 
 @router.get("/download/{fmt}/{node_id}/{path:path}")
