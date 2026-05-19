@@ -490,8 +490,9 @@ def test_kados_content_return_plugin_not_implemented_falls_back(app_with_plugin)
 def test_kados_router_propagates_httpexception_from_handler(app_with_plugin):
     """A handler that raises HTTPException directly (eg. an
     auth-style handler that wants to return a specific status code)
-    must NOT be repackaged as 500 — the router re-raises so the
-    handler's status code reaches the caller."""
+    must NOT be repackaged as 500 -- the router re-raises so the
+    handler's status code reaches the caller. Custom test methods
+    aren't in the anonymous list so the call needs a Session token."""
     import hummingbird.protocols.kados.methods as kd_methods
     from fastapi import HTTPException
 
@@ -499,9 +500,10 @@ def test_kados_router_propagates_httpexception_from_handler(app_with_plugin):
         raise HTTPException(status_code=418, detail="im a teapot")
 
     client, _ = app_with_plugin
+    token = _login_kados(client)
     kd_methods._REGISTRY["_teapot"] = _http_raiser
     try:
-        r = _kados(client, "_teapot")
+        r = _kados(client, "_teapot", headers={"Authorization": f"Session {token}"})
         assert r.status_code == 418
         assert "teapot" in r.json()["detail"]
     finally:
@@ -518,9 +520,10 @@ def test_kados_router_maps_notimplementederror_to_501(app_with_plugin):
         raise NotImplementedError("not yet")
 
     client, _ = app_with_plugin
+    token = _login_kados(client)
     kd_methods._REGISTRY["_ni_method"] = _ni
     try:
-        r = _kados(client, "_ni_method")
+        r = _kados(client, "_ni_method", headers={"Authorization": f"Session {token}"})
         assert r.status_code == 501
         assert "not yet" in r.json()["detail"]
     finally:
@@ -767,3 +770,63 @@ def test_resources_session_expired_returns_401(app_with_plugin):
     _time.sleep(0.1)
     r = client.get("/protocols/hummingbird/v1/resources/4/9999")
     assert r.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# get_metadata hook -> contentMetadata via plugin
+# ---------------------------------------------------------------------------
+
+
+def test_kados_content_metadata_uses_plugin_when_available(app_with_plugin):
+    """contentMetadata previously returned an empty {dc:identifier:..., dc:title:""}
+    stub for every call. The plugin now gets the chance to supply real
+    metadata (NNELS' 30-day cache, etc.) via the optional get_metadata
+    hook. DODP clients see real titles + authors instead of blank fields."""
+    client, plugin = app_with_plugin
+
+    async def _real_metadata(user, content_id):
+        return {
+            "dc:identifier": str(content_id),
+            "dc:title": "Moby-Dick",
+            "dc:creator": "Herman Melville",
+            "dc:format": "audio/mpeg",
+        }
+    # Plugin doesn't declare get_metadata in the abstract contract;
+    # plugins opt in by overriding it. Inject at instance level here.
+    plugin.get_metadata = _real_metadata
+
+    token = _login_kados(client)
+    r = _kados(
+        client, "contentMetadata", {"contentId": 42},
+        headers={"Authorization": f"Session {token}"},
+    )
+    assert r.status_code == 200
+    meta = r.json()["data"]["metadata"]
+    assert meta["dc:title"] == "Moby-Dick"
+    assert meta["dc:creator"] == "Herman Melville"
+
+
+def test_kados_content_metadata_falls_back_to_stub_when_plugin_not_impl(app_with_plugin):
+    """Plugin's get_metadata raising NotImplementedError -> handler
+    falls back to the minimal stub. Existing plugins that predate the
+    hook (and use the base Plugin.get_metadata which raises) keep
+    working."""
+    client, plugin = app_with_plugin
+
+    async def _ni(user, content_id):
+        raise NotImplementedError
+    plugin.get_metadata = _ni
+
+    token = _login_kados(client)
+    r = _kados(
+        client, "contentMetadata", {"contentId": 42},
+        headers={"Authorization": f"Session {token}"},
+    )
+    assert r.status_code == 200
+    meta = r.json()["data"]["metadata"]
+    assert meta["dc:identifier"] == "42"
+    assert meta["dc:title"] == ""
+
+
+# (No-plugin contentMetadata stub coverage lives in
+#  test_router_kados.test_content_metadata_includes_identifier.)

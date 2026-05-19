@@ -381,7 +381,7 @@ async def resources_endpoint(
     request: Request,
     fmt: int,
     node_id: int,
-    user: str = Depends(auth_module.current_user),
+    user: str = Depends(auth_module.current_user_basic_or_session),
 ):
     """Returns the DODP-shape resource list. On cold cache, returns
     503 + Retry-After while the background prefetch runs -- DODP-clean
@@ -504,7 +504,7 @@ def _stream_zip_entry(zip_path: Path, inner_path: str) -> StreamingResponse:
 async def download_info(
     fmt: int,
     node_id: int,
-    user: str = Depends(auth_module.current_user),
+    user: str = Depends(auth_module.current_user_basic_or_session),
 ):
     """Return JSON metadata describing the cached file (single vs archive,
     filename, list of contents). Useful for DAISY-aware clients that want
@@ -541,7 +541,7 @@ async def download_info(
 async def download_file(
     fmt: int,
     node_id: int,
-    user: str = Depends(auth_module.current_user),
+    user: str = Depends(auth_module.current_user_basic_or_session),
 ):
     """Serve the cached file (or zip archive) for (fmt, node_id) as
     bytes. Cold-cache requests return 503 + Retry-After while the
@@ -564,7 +564,7 @@ async def download_fetch(
     fmt: int,
     node_id: int,
     path: str,
-    user: str = Depends(auth_module.current_user),
+    user: str = Depends(auth_module.current_user_basic_or_session),
 ):
     result = await ensure_cached_or_prefetch(fmt, node_id, username=user)
     if result.state == CacheState.PREPARING:

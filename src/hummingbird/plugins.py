@@ -97,6 +97,27 @@ class Plugin(ABC):
         """
         ...
 
+    # NOTE: ``get_metadata`` is intentionally NOT @abstractmethod.
+    # Existing plugins predate this hook; declaring it abstract would
+    # break every deployed plugin at instantiation time. New plugins
+    # SHOULD override it to surface real metadata to the KADOS
+    # ``contentMetadata`` handler; plugins that don't can just leave
+    # the NotImplementedError raise here in place and the KADOS
+    # surface falls back to its minimal {dc:identifier, ...} stub.
+    async def get_metadata(
+        self, username: str, content_id: int | str
+    ) -> dict | None:
+        """Return DC-shape metadata for a content id, or None if the
+        plugin doesn't have any. Caller wraps the dict in a
+        ``{"metadata": ...}`` envelope before returning to KADOS.
+
+        Conventional keys: ``dc:identifier``, ``dc:title``,
+        ``dc:creator`` (author), ``dc:contributor`` (narrator),
+        ``dc:format``, ``dc:description``. Plugins MAY include
+        additional keys the upstream library exposes.
+        """
+        raise NotImplementedError
+
 
 _active: Plugin | None = None
 _loaded = False

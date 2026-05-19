@@ -118,51 +118,57 @@ def test_api_key_accepted_when_match(client_with_apikey):
     assert r.status_code == 200
 
 
-def test_session_header_with_wrong_prefix_treated_as_anon(client):
-    """``Authorization: Bearer xyz`` is not "Session <token>" — the
-    request is treated as unauthenticated."""
+def test_session_header_with_wrong_prefix_returns_401(client):
+    """``Authorization: Bearer xyz`` is not "Session <token>" -- the
+    request is unauthenticated, which the router now turns into HTTP
+    401 instead of silently returning empty data. The PHP adapter
+    contract says session-required endpoints MUST 401 so KADOS can
+    re-trigger logOn; previously expired tokens looked like empty
+    bookshelves to the SOAP layer."""
     r = _call(
         client, "contentList", {"list": "bookshelf"},
         headers={"Authorization": "Bearer notasessiontoken"},
     )
-    # contentList with no user -> empty.
-    assert r.status_code == 200
-    assert r.json()["data"]["totalItems"] == 0
+    assert r.status_code == 401
 
 
-def test_session_header_unknown_token_treated_as_anon(client):
+def test_session_header_unknown_token_returns_401(client):
     r = _call(
         client, "contentList", {"list": "bookshelf"},
         headers={"Authorization": "Session not-a-real-token"},
     )
-    assert r.status_code == 200
-    assert r.json()["data"]["totalItems"] == 0
+    assert r.status_code == 401
 
 
 def test_stub_method_returns_null(client):
     """KADOS stub methods now return ``{"data": null}`` rather than
-    raising 501 — KADOS' adapter treats any non-200 as fatal, so a
+    raising 501 -- KADOS' adapter treats any non-200 as fatal, so a
     501 from a stub crashes every DODP request once log level is
     INFO+. The mock_backend has always done this; hummingbird now
-    matches."""
-    r = _call(client, "menuBack")  # an arbitrary stub
+    matches. Most stubs are session-required (per-content scope),
+    so authenticate first."""
+    token = _authenticate(client)
+    r = _call(client, "menuBack", headers=_session_headers(token))
     assert r.status_code == 200
     assert r.json() == {"data": None}
 
 
 def test_handler_unexpected_exception_returns_500(client, monkeypatch):
     """An unhandled exception in a handler bubbles to the router and
-    becomes a 500 (not a 501 — that's reserved for the explicit
-    NotImplementedError stub path)."""
+    becomes a 500 (not a 501 -- that's reserved for the explicit
+    NotImplementedError stub path). Custom test method isn't on the
+    anonymous-allowed list so authenticate first."""
     import hummingbird.protocols.kados.methods as kd_methods
 
     async def _boom(data, user, **_):
         raise RuntimeError("kaboom")
 
     monkeypatch.setitem(kd_methods._REGISTRY, "_boom_method", _boom)
+    token = _authenticate(client)
     r = client.post(
         "/protocols/kados/v1/methods/_boom_method/",
         json={"method": "_boom_method", "data": {}},
+        headers=_session_headers(token),
     )
     assert r.status_code == 500
 
@@ -199,20 +205,22 @@ def test_authenticate_rejects_wrong_password(client):
 
 
 def test_content_list_exists_known_lists(client):
+    token = _authenticate(client)
     for name in ("bookshelf", "new"):
-        r = _call(client, "contentListExists", {"list": name})
+        r = _call(client, "contentListExists", {"list": name}, headers=_session_headers(token))
         assert r.status_code == 200
         assert r.json()["data"] is True
 
 
 def test_content_list_exists_unknown(client):
-    r = _call(client, "contentListExists", {"list": "fictional"})
+    token = _authenticate(client)
+    r = _call(client, "contentListExists", {"list": "fictional"}, headers=_session_headers(token))
     assert r.json()["data"] is False
 
 
-def test_content_list_anon_returns_empty(client):
+def test_content_list_anon_returns_401(client):
     r = _call(client, "contentList", {"list": "bookshelf"})
-    assert r.json()["data"] == {"totalItems": 0, "contentItem": []}
+    assert r.status_code == 401
 
 
 def test_content_list_non_bookshelf_returns_empty(client):
@@ -238,9 +246,9 @@ def test_content_list_returns_bookshelf(client):
 # ---------------------------------------------------------------------------
 
 
-def test_content_exists_anon_false(client):
+def test_content_exists_anon_returns_401(client):
     r = _call(client, "contentExists", {"contentId": 42})
-    assert r.json()["data"] is False
+    assert r.status_code == 401
 
 
 def test_content_exists_invalid_id_false(client):
@@ -257,17 +265,20 @@ def test_content_exists_true_when_on_shelf(client):
 
 
 def test_content_metadata_includes_identifier(client):
-    r = _call(client, "contentMetadata", {"contentId": 7})
+    token = _authenticate(client)
+    r = _call(client, "contentMetadata", {"contentId": 7}, headers=_session_headers(token))
     assert r.json()["data"]["metadata"]["dc:identifier"] == "7"
 
 
 def test_content_metadata_missing_id(client):
-    r = _call(client, "contentMetadata", {})
+    token = _authenticate(client)
+    r = _call(client, "contentMetadata", {}, headers=_session_headers(token))
     assert r.json()["data"]["metadata"]["dc:identifier"] == ""
 
 
 def test_content_resources_returns_empty_list(client):
-    r = _call(client, "contentResources", {"contentId": 7})
+    token = _authenticate(client)
+    r = _call(client, "contentResources", {"contentId": 7}, headers=_session_headers(token))
     body = r.json()["data"]
     assert body["resources"] == []
     assert body["metadata"]["dc:identifier"] == "7"
@@ -278,9 +289,9 @@ def test_content_resources_returns_empty_list(client):
 # ---------------------------------------------------------------------------
 
 
-def test_content_add_bookshelf_anon_false(client):
+def test_content_add_bookshelf_anon_returns_401(client):
     r = _call(client, "contentAddBookshelf", {"contentId": 42})
-    assert r.json()["data"] is False
+    assert r.status_code == 401
 
 
 def test_content_add_bookshelf_invalid_id_false(client):
@@ -298,9 +309,9 @@ def test_content_add_bookshelf_success(client):
     assert r.json()["data"] is True
 
 
-def test_content_return_anon_false(client):
+def test_content_return_anon_returns_401(client):
     r = _call(client, "contentReturn", {"contentId": 42})
-    assert r.json()["data"] is False
+    assert r.status_code == 401
 
 
 def test_content_return_invalid_id_false(client):
@@ -327,14 +338,42 @@ def test_start_session_true_when_user(client):
     assert r.json()["data"] is True
 
 
-def test_start_session_false_when_anon(client):
+def test_start_session_anon_returns_401(client):
+    """startSession is a session-required method per the OpenAPIAdapter
+    contract: the client just authenticated, has a token, and
+    startSession is called to validate it. Calling without a token
+    means the caller skipped authenticate -- return 401 so KADOS
+    re-runs logOn."""
     r = _call(client, "startSession", {})
-    assert r.json()["data"] is False
+    assert r.status_code == 401
 
 
-def test_stop_session_always_true(client):
-    r = _call(client, "stopSession", {})
+def test_stop_session_succeeds_with_session(client):
+    """stopSession requires a session token (the contract is to
+    INVALIDATE that token). Calling without one is now a 401."""
+    token = _authenticate(client)
+    r = _call(client, "stopSession", {}, headers=_session_headers(token))
+    assert r.status_code == 200
     assert r.json()["data"] is True
+
+
+def test_stop_session_drops_token_from_sessions(tmp_path, monkeypatch):
+    """stopSession must remove the token from the server-side _SESSIONS
+    map; the PHP adapter clears its local copy AFTER the call, so the
+    backend MUST already be done with the token. Previously stopSession
+    returned True without touching _SESSIONS -- the token lived forever
+    server-side, a memory leak + contract violation."""
+    client, kd_router = _build_client(tmp_path, monkeypatch)
+    token = _authenticate(client)
+    assert token in kd_router._SESSIONS
+
+    r = _call(client, "stopSession", {}, headers=_session_headers(token))
+    assert r.status_code == 200
+    assert token not in kd_router._SESSIONS
+
+    # Re-using the dropped token now returns 401 (no longer valid).
+    r2 = _call(client, "contentList", {"list": "bookshelf"}, headers=_session_headers(token))
+    assert r2.status_code == 401
 
 
 def test_set_protocol_version_always_true(client):
@@ -396,20 +435,24 @@ def test_label_falls_back_to_constant_when_id_missing(client):
 
 
 def test_content_accessible_default_true(client):
-    """Anything on the bookshelf is accessible to its owner —
-    plugins with stricter policies override."""
-    r = _call(client, "contentAccessible", {"contentId": 42})
+    """Anything on the bookshelf is accessible to its owner --
+    plugins with stricter policies override. Per-content gates are
+    session-required so authenticate first."""
+    token = _authenticate(client)
+    r = _call(client, "contentAccessible", {"contentId": 42}, headers=_session_headers(token))
     assert r.json()["data"] is True
 
 
 def test_content_returnable_default_true(client):
-    r = _call(client, "contentReturnable", {"contentId": 42})
+    token = _authenticate(client)
+    r = _call(client, "contentReturnable", {"contentId": 42}, headers=_session_headers(token))
     assert r.json()["data"] is True
 
 
 def test_content_issuable_default_false(client):
-    """Standalone has no loan ceremony — nothing needs issuing."""
-    r = _call(client, "contentIssuable", {"contentId": 42})
+    """Standalone has no loan ceremony -- nothing needs issuing."""
+    token = _authenticate(client)
+    r = _call(client, "contentIssuable", {"contentId": 42}, headers=_session_headers(token))
     assert r.json()["data"] is False
 
 
@@ -465,10 +508,9 @@ def test_content_resources_returns_archive_entries(client, tmp_path, monkeypatch
         assert res["uri"].startswith("https://hummingbird.example.com/")
 
 
-def test_content_resources_anon_returns_empty(client):
+def test_content_resources_anon_returns_401(client):
     r = _call(client, "contentResources", {"contentId": 300})
-    body = r.json()["data"]
-    assert body["resources"] == []
+    assert r.status_code == 401
 
 
 def test_content_resources_bad_content_id_returns_empty(client):
@@ -498,9 +540,9 @@ def test_content_return_date_via_storage(client):
     assert r.json()["data"] is None
 
 
-def test_content_return_date_anon_returns_none(client):
+def test_content_return_date_anon_returns_401(client):
     r = _call(client, "contentReturnDate", {"contentId": 42})
-    assert r.json()["data"] is None
+    assert r.status_code == 401
 
 
 def test_content_return_date_invalid_content_id_returns_none(client):
@@ -526,9 +568,9 @@ def test_set_and_get_bookmarks_roundtrip(client):
     assert "updated_at" in body
 
 
-def test_set_bookmarks_anon_false(client):
+def test_set_bookmarks_anon_returns_401(client):
     r = _call(client, "setBookmarks", {"contentId": 42, "bookmark": {}})
-    assert r.json()["data"] is False
+    assert r.status_code == 401
 
 
 def test_set_bookmarks_no_content_id_false(client):
@@ -537,9 +579,9 @@ def test_set_bookmarks_no_content_id_false(client):
     assert r.json()["data"] is False
 
 
-def test_get_bookmarks_anon_empty(client):
+def test_get_bookmarks_anon_returns_401(client):
     r = _call(client, "getBookmarks", {"contentId": 42})
-    assert r.json()["data"] == {}
+    assert r.status_code == 401
 
 
 def test_get_bookmarks_no_content_id_empty(client):
@@ -625,3 +667,80 @@ def test_kados_session_expired_returns_401_and_drops_token(tmp_path, monkeypatch
     )
     assert r.status_code == 401
     assert token not in kd_router._SESSIONS
+
+
+# ---------------------------------------------------------------------------
+# N3: contentResources reads accessMethod (the PHP adapter sends this);
+# legacy `format` still works for hummingbird-native clients.
+# ---------------------------------------------------------------------------
+
+
+def test_content_resources_reads_access_method(client):
+    """The OpenAPIAdapter forwards `contentResources($cid, $accessMethod)`
+    which lands on the wire as ``data["accessMethod"]``, not
+    ``data["format"]``. Previously hummingbird only read ``format``
+    and silently fell back to its DAISY-202 default for every PHP-
+    adapter call -- a real format-selection bug masked by the
+    default. Now ``accessMethod`` is honoured.
+
+    With no cache populated the response is empty regardless of
+    format, but the metadata.dc:identifier echoes back so we can
+    confirm the call reached the handler."""
+    token = _authenticate(client)
+    r = _call(
+        client, "contentResources",
+        {"contentId": 99, "accessMethod": 4},
+        headers=_session_headers(token),
+    )
+    assert r.status_code == 200
+    assert r.json()["data"]["metadata"]["dc:identifier"] == "99"
+
+
+def test_content_resources_legacy_format_key_still_accepted(client):
+    """Hummingbird-native clients that predate the rename can keep
+    sending ``format`` -- accessMethod takes precedence when both are
+    present, otherwise format is read."""
+    token = _authenticate(client)
+    r = _call(
+        client, "contentResources",
+        {"contentId": 99, "format": 4},
+        headers=_session_headers(token),
+    )
+    assert r.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Anonymous methods stay reachable without a session (logon-flow + UI labels).
+# ---------------------------------------------------------------------------
+
+
+def test_label_reachable_without_session(client):
+    """KADOS calls label() for UI element labels during service startup,
+    BEFORE the user logs on. It must stay anonymous."""
+    r = _call(client, "label", {"id": "service-provider"})
+    assert r.status_code == 200
+    assert r.json()["data"]["text"] == "service-provider"
+
+
+def test_announcements_reachable_without_session(client):
+    r = _call(client, "announcements", {})
+    assert r.status_code == 200
+    assert r.json()["data"] == []
+
+
+def test_terms_of_service_accepted_reachable_without_session(client):
+    r = _call(client, "termsOfServiceAccepted", {})
+    assert r.status_code == 200
+    assert r.json()["data"] is True
+
+
+def test_set_protocol_version_reachable_without_session(client):
+    r = _call(client, "setProtocolVersion", {"version": 2})
+    assert r.status_code == 200
+
+
+def test_log_soap_request_and_response_reachable_without_session(client):
+    """KADOS calls this on EVERY request when log level is INFO+, including
+    well before logOn completes. Must stay anonymous."""
+    r = _call(client, "logSoapRequestAndResponse", {"request": "x", "response": "y"})
+    assert r.status_code == 200

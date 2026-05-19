@@ -74,8 +74,9 @@ async def _content_list_exists(data: dict, user: str | None, **_) -> bool:
 
 @method("contentList")
 async def _content_list(data: dict, user: str | None, **_) -> dict:
-    if not user:
-        return {"totalItems": 0, "contentItem": []}
+    # ``user`` is guaranteed non-None here -- the router gates every
+    # user-scoped method with a 401 when no valid session token is
+    # presented. We just route to the right backend.
     listname = data.get("list", "bookshelf")
     if listname != "bookshelf":
         return {"totalItems": 0, "contentItem": []}
@@ -99,8 +100,6 @@ async def _content_list(data: dict, user: str | None, **_) -> dict:
 
 @method("contentExists")
 async def _content_exists(data: dict, user: str | None, **_) -> bool:
-    if not user:
-        return False
     try:
         cid = int(data.get("contentId", 0))
     except (TypeError, ValueError):
@@ -110,10 +109,26 @@ async def _content_exists(data: dict, user: str | None, **_) -> bool:
 
 @method("contentMetadata")
 async def _content_metadata(data: dict, user: str | None, **_) -> dict:
-    # Minimal stub — real metadata lives in the NNELS plugin's 30-day cache;
-    # the plugin is free to extend this handler, but the base returns enough
-    # for KADOS to not crash.
+    """DODP getContentMetadata. Returns a DC-shaped metadata dict.
+    If the active plugin exposes ``get_metadata(user, content_id)``
+    we use its richer shape (NNELS' 30-day metadata cache has real
+    title / authors / narrator); otherwise we emit the minimum
+    KADOS won't crash on."""
     cid = data.get("contentId")
+
+    plugin = active_plugin()
+    if plugin is not None and cid is not None:
+        get_meta = getattr(plugin, "get_metadata", None)
+        if get_meta is not None:
+            try:
+                meta = await get_meta(user, cid)
+            except NotImplementedError:
+                meta = None
+            if meta:
+                # Caller hands back a {dc:identifier, dc:title, dc:creator,
+                # dc:format, ...} dict already shaped for DODP.
+                return {"metadata": meta}
+
     return {
         "metadata": {
             "dc:identifier": str(cid) if cid is not None else "",
@@ -133,22 +148,20 @@ async def _content_resources(data: dict, user: str | None, **_) -> dict:
     ``/resources/{fmt}/{node_id}`` route returns. Both go through the
     same ``download.list_resources`` helper.
 
-    ``contentId`` here is the NNELS node_id. A book usually has
-    multiple formats (MP3, DAISY 202 Audio, BRF) and we have to pick
-    one to enumerate. The accompanying ``format`` field in the data
-    payload picks a specific one; if absent, we prefer DAISY 202
-    Audio (format 11) so DAISY clients get the full structure, and
-    fall back to MP3 (format 4) for clients that just want flat
-    audio.
+    ``contentId`` here is the NNELS node_id. The PHP adapter sends
+    ``accessMethod`` (the DODP-spec key); legacy hummingbird-aware
+    clients used ``format``. We try ``accessMethod`` first, fall back
+    to ``format``, and finally default to DAISY 202 Audio (fmt 11) so
+    DAISY clients get the full structure.
     """
     from ...download import ensure_cached, list_resources
 
     cid_raw = data.get("contentId")
-    if cid_raw is None or not user:
+    if cid_raw is None:
         return {
             "returnBy": None,
             "resources": [],
-            "metadata": {"dc:identifier": str(cid_raw) if cid_raw is not None else ""},
+            "metadata": {"dc:identifier": ""},
         }
     try:
         cid = int(cid_raw)
@@ -159,15 +172,15 @@ async def _content_resources(data: dict, user: str | None, **_) -> dict:
             "metadata": {"dc:identifier": str(cid_raw)},
         }
 
-    # Allow the client to specify a format; default to DAISY 202 Audio
-    # then MP3. KADOS clients that follow strict DODP don't usually
-    # send `format` so we pick a sensible default; Hummingbird-aware
-    # clients can override.
-    fmt = data.get("format")
-    if fmt is None:
-        fmt = 11
+    # Prefer the DODP-spec ``accessMethod`` (what the PHP adapter
+    # forwards via ``contentResources($contentId, $accessMethod)``).
+    # Fall back to legacy ``format`` for hummingbird-native clients
+    # that predate the rename. Default to DAISY 202 Audio (fmt 11).
+    fmt_raw = data.get("accessMethod")
+    if fmt_raw is None:
+        fmt_raw = data.get("format")
     try:
-        fmt = int(fmt)
+        fmt = int(fmt_raw) if fmt_raw is not None else 11
     except (TypeError, ValueError):
         fmt = 11
 
@@ -193,8 +206,6 @@ async def _content_resources(data: dict, user: str | None, **_) -> dict:
 
 @method("contentAddBookshelf")
 async def _content_add_bookshelf(data: dict, user: str | None, **_) -> bool:
-    if not user:
-        return False
     try:
         cid = int(data.get("contentId", 0))
     except (TypeError, ValueError):
@@ -210,8 +221,6 @@ async def _content_add_bookshelf(data: dict, user: str | None, **_) -> bool:
 
 @method("contentReturn")
 async def _content_return(data: dict, user: str | None, **_) -> bool:
-    if not user:
-        return False
     try:
         cid = int(data.get("contentId", 0))
     except (TypeError, ValueError):
@@ -278,8 +287,6 @@ async def _terms_of_service_accepted(data: dict, user: str | None, **_) -> bool:
 
 @method("setBookmarks")
 async def _set_bookmarks(data: dict, user: str | None, **_) -> bool:
-    if not user:
-        return False
     cid = str(data.get("contentId", ""))
     if not cid:
         return False
@@ -295,8 +302,6 @@ async def _set_bookmarks(data: dict, user: str | None, **_) -> bool:
 
 @method("getBookmarks")
 async def _get_bookmarks(data: dict, user: str | None, **_) -> dict:
-    if not user:
-        return {}
     cid = str(data.get("contentId", ""))
     if not cid:
         return {}
@@ -341,8 +346,6 @@ async def _content_return_date(data: dict, user: str | None, **_) -> str | None:
     """Return the ISO-8601 due date for a (user, book) pair, or None if
     the library has no loan period (NNELS) or the book isn't on the
     user's shelf. Drives client-side auto-return on expiry."""
-    if not user:
-        return None
     try:
         cid = int(data.get("contentId", 0))
     except (TypeError, ValueError):

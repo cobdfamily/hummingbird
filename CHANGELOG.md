@@ -5,6 +5,87 @@ Versioning: SemVer; pre-1.0 minor bumps may break.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-05-18
+
+Scope-B: KADOS surface aligned to the actual ``OpenAPIAdapter``
+contract (the PHP adapter ``cobdfamily/openapi-kados`` is the
+authority). Three correctness fixes + three forward-looking
+promotions, all server-side.
+
+### Fixed
+- **N1: User-scoped KADOS calls now return HTTP 401 without a valid
+  session token.** Previously they returned shape-appropriate empty
+  data (``{totalItems:0, contentItem:[]}`` for contentList, ``False``
+  for contentExists, etc.), so a stale or missing token looked to the
+  KADOS PHP layer like an empty bookshelf -- KADOS happily relayed
+  that to the SOAP client instead of re-triggering ``logOn``. The
+  ``OpenAPIAdapter.md`` contract is explicit: "Endpoints that require
+  a session and receive no valid token MUST respond with an HTTP
+  401." The dispatcher now enforces it. An ``_ANONYMOUS_METHODS``
+  allow-list (``authenticate``, ``label``, ``setProtocolVersion``,
+  ``logSoapRequestAndResponse``, ``announcements``,
+  ``termsOfServiceAccepted`` + the PDTB2 / ToS hooks) preserves the
+  pre-logOn handshake path.
+
+- **N2: ``stopSession`` drops the caller's token from ``_SESSIONS``.**
+  The adapter clears its own local sessionToken AFTER calling
+  ``stopSession``, expecting the backend to have already invalidated
+  it. Previously hummingbird returned ``True`` without touching
+  ``_SESSIONS``, so tokens lived forever server-side (memory leak)
+  AND violated the adapter's invariant that ``stopSession`` ->
+  ``startSession`` returns ``False``. The router now pops the token
+  after a successful ``stopSession`` dispatch; a re-use of the
+  dropped token returns 401.
+
+- **N3: ``contentResources`` reads ``accessMethod``** (the DODP-spec
+  key the PHP adapter sends via
+  ``contentResources($contentId, $accessMethod)``) instead of
+  ``format``. Previously the handler always fell back to its
+  DAISY-202 default for every PHP-adapter call -- a real
+  format-selection bug masked by the default for NNELS but real
+  noise for any other backend. ``format`` is still accepted as a
+  legacy alias for hummingbird-native clients that predate the
+  rename.
+
+### Changed
+- **``contentMetadata`` consults the active plugin when it can.** New
+  optional ``Plugin.get_metadata(user, content_id)`` hook (NOT
+  ``@abstractmethod`` -- existing plugins keep working). When a
+  plugin overrides it, real metadata (NNELS' 30-day cache: title,
+  authors, narrators, format) flows to KADOS' DC envelope instead of
+  the empty stub. When no plugin overrides, falls back to the prior
+  minimal ``{dc:identifier, dc:title:"", dc:format:"", dc:creator:""}``.
+
+- **/resources and /download accept ``Authorization: Session <token>``
+  in addition to Basic.** New ``auth.current_user_basic_or_session``
+  dependency tries the KADOS session header first, falls back to
+  Basic. The resource URIs returned by KADOS ``contentResources``
+  point at REST ``/download``; DAISY-Online clients (EasyReader, a
+  future BookPlayer ``.dodp`` source) authenticate via session
+  token only and previously got 401 + a ``WWW-Authenticate: Basic``
+  challenge they couldn't satisfy. BookPlayer's existing Basic-auth
+  flow is unchanged (one new test pins it).
+
+- **Startup warning when ``HUMMINGBIRD_PUBLIC_BASE_URL`` is unset.**
+  KADOS clients don't carry an HTTP base URL through their RPC, so
+  the KADOS surface emits relative resource URIs when the env var
+  isn't set. Some DAISY-Online clients won't resolve those against
+  the SOAP endpoint. The warning runs at app startup so operators
+  catch it before users do.
+
+### Tests
+14 new tests across ``test_router_kados.py`` (401 enforcement
+matrix, ``stopSession`` token-drop, ``accessMethod`` key, anonymous
+allow-list pinning), ``test_plugin_active.py`` (``get_metadata``
+plugin path + NotImplementedError fallback), and
+``test_router_hummingbird.py`` (``/download`` and ``/resources``
+accept Session tokens; Basic-auth regression guard). Total 244
+tests, coverage 94.39%.
+
+### KADOS contract reference
+- ``cobdfamily/openapi-kados/services/kados/includes/adapters/OpenAPIAdapter.md``
+- ``cobdfamily/openapi-kados/services/kados/includes/adapters/OpenAPIAdapter.class.php``
+
 ## [0.5.0] - 2026-05-18
 
 Pre-Sweep-1B scope-A correctness pass: defensive sanitization,

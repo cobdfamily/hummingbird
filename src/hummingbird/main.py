@@ -51,6 +51,22 @@ async def _cache_prune_loop() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # KADOS clients don't carry an HTTP base URL through the request,
+    # so the KADOS surface needs HUMMINGBIRD_PUBLIC_BASE_URL set to
+    # emit absolute resource URIs. Without it, contentResources hands
+    # back relative paths -- some DAISY-Online players (and the PHP
+    # adapter in some configurations) won't resolve them against the
+    # SOAP endpoint. Warn loudly at startup so operators notice before
+    # users do.
+    if not settings.public_base_url:
+        logger.warning(
+            "HUMMINGBIRD_PUBLIC_BASE_URL is not set -- KADOS resource "
+            "URIs will be emitted as relative paths and some DAISY-"
+            "Online clients won't resolve them. Set it to the public "
+            "URL operators expose this server at (e.g. "
+            "https://hummingbird.example.com)."
+        )
+
     task: asyncio.Task | None = None
     if settings.cache_max_age_days > 0:
         task = asyncio.create_task(_cache_prune_loop())
