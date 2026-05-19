@@ -155,3 +155,38 @@ async def current_user(
             headers={"WWW-Authenticate": "Basic"},
         )
     return user
+
+
+async def current_user_basic_or_session(
+    authorization: str | None = Header(default=None),
+) -> str:
+    """Accept EITHER Basic auth (REST clients like BookPlayer) OR a
+    KADOS-issued Session token (DAISY-Online clients).
+
+    Routes that serve content the KADOS surface points at (the
+    `/resources` and `/download` endpoints whose URIs leak out
+    through ``getContentResources``) need this -- a DODP client
+    authenticated against /protocols/kados/v1 with a Session token
+    can't re-auth via Basic to fetch each resource. Without this
+    helper the client gets a 401 + WWW-Authenticate: Basic challenge
+    that it can't satisfy.
+    """
+    if authorization and authorization.startswith("Session "):
+        token = authorization[len("Session "):].strip() or None
+        # Lazy import: protocols.kados.router imports plugins which
+        # imports config; keeping this off the auth import chain
+        # avoids a cycle at module init.
+        from .protocols.kados.router import session_user
+        user = session_user(token)
+        if user is not None:
+            return user
+        raise HTTPException(
+            status_code=401,
+            detail="invalid or expired Session token",
+            # No WWW-Authenticate: Basic challenge here -- the caller
+            # explicitly chose Session auth and a Basic challenge would
+            # mislead a DODP client into prompting the user for a
+            # password it doesn't need.
+        )
+    # Fall back to the standard Basic-auth dependency.
+    return await current_user(authorization)

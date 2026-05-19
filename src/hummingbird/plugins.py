@@ -15,6 +15,15 @@ logger = logging.getLogger(__name__)
 _ENTRY_POINT_GROUP = "hummingbird.plugins"
 
 
+class SessionExpired(Exception):
+    """Raised by a plugin hook when its upstream session is no longer
+    valid. The REST and KADOS routers catch this and return HTTP 401
+    so clients can re-authenticate cleanly. Without this signal an
+    expired upstream cookie surfaces as a silent empty bookshelf,
+    which users read as "all my books vanished."
+    """
+
+
 class Plugin(ABC):
     """Hooks a plugin may override. Every hook is optional — a plugin may
     `raise NotImplementedError` to defer to the default backend."""
@@ -87,6 +96,27 @@ class Plugin(ABC):
         the upstream credentials.
         """
         ...
+
+    # NOTE: ``get_metadata`` is intentionally NOT @abstractmethod.
+    # Existing plugins predate this hook; declaring it abstract would
+    # break every deployed plugin at instantiation time. New plugins
+    # SHOULD override it to surface real metadata to the KADOS
+    # ``contentMetadata`` handler; plugins that don't can just leave
+    # the NotImplementedError raise here in place and the KADOS
+    # surface falls back to its minimal {dc:identifier, ...} stub.
+    async def get_metadata(
+        self, username: str, content_id: int | str
+    ) -> dict | None:
+        """Return DC-shape metadata for a content id, or None if the
+        plugin doesn't have any. Caller wraps the dict in a
+        ``{"metadata": ...}`` envelope before returning to KADOS.
+
+        Conventional keys: ``dc:identifier``, ``dc:title``,
+        ``dc:creator`` (author), ``dc:contributor`` (narrator),
+        ``dc:format``, ``dc:description``. Plugins MAY include
+        additional keys the upstream library exposes.
+        """
+        raise NotImplementedError
 
 
 _active: Plugin | None = None

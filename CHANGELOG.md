@@ -5,6 +5,132 @@ Versioning: SemVer; pre-1.0 minor bumps may break.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-05-18
+
+Server-side correctness release. Two themes:
+
+1. **Defensive cleanup of long-standing footguns** (Scope A): path
+   traversal, silent session-expired UX, multi-user prefetch race.
+2. **KADOS surface aligned to the real `OpenAPIAdapter` contract**
+   (Scope B), with the PHP adapter in `cobdfamily/openapi-kados` as
+   the authority. Plus three forward-looking promotions for the
+   in-flight BookPlayer `.dodp` source.
+
+### Fixed
+- **Path-traversal defense at the storage layer.** Usernames flow in
+  from HTTP Basic auth (REST) and the KADOS Session-token resolver;
+  KADOS `contentId`s flow in from arbitrary RPC callers. Both were
+  being interpolated directly into filesystem paths
+  (`bookshelves/{user}.json`, `bookmarks/{user}/{cid}.json`, etc.).
+  A KADOS client passing `contentId="../sessions/admin"` could write
+  to any path the server process could reach. New
+  `storage._safe_component(...)` helper rejects empty, overlong,
+  `.`/`..`, and `/` / `\` / NUL-containing components with
+  `ValueError` before path construction. Applied to every shelf /
+  session / bookmark path on both surfaces.
+
+- **NNELS expired-cookie no longer surfaces as a silent empty
+  bookshelf.** New `hummingbird.plugins.SessionExpired` exception:
+  plugins raise it when their upstream session is no longer usable,
+  the REST router maps to HTTP 401 + `WWW-Authenticate: Basic`, the
+  KADOS router maps to HTTP 401 *and* drops the caller's token from
+  the in-memory `_SESSIONS` map so a follow-up `authenticate` call
+  mints a fresh one. The previous behavior -- `list_bookshelf`
+  returning `[]` when NNELS had logged the user out -- read to users
+  as "all my books vanished." Every plugin-touching route (bookshelf
+  list / add / remove, search, bookmark get / set, resources,
+  download, download-fetch) carries the new branch.
+
+- **Plugin-driven download `SessionExpired` propagates through the
+  async prefetch.** New `CacheState.SESSION_EXPIRED` state. When
+  `plugin.download` raises `SessionExpired`, the background prefetch
+  task surfaces it on the next poll instead of swallowing it as
+  generic FAILED. Route returns 401 (REST) or 401 with token drop
+  (KADOS) so clients can re-auth instead of seeing an opaque 404.
+
+- **N1: User-scoped KADOS calls return HTTP 401 without a valid
+  session token.** Previously they returned shape-appropriate empty
+  data (`{totalItems:0, contentItem:[]}` for contentList, `False`
+  for contentExists, etc.), so a stale or missing token looked to
+  KADOS like an empty bookshelf -- the SOAP layer relayed that to
+  the client instead of re-triggering `logOn`. The `OpenAPIAdapter.md`
+  contract is explicit: "Endpoints that require a session and
+  receive no valid token MUST respond with an HTTP 401." Dispatcher
+  now enforces it; an `_ANONYMOUS_METHODS` allow-list
+  (`authenticate`, `label`, `setProtocolVersion`,
+  `logSoapRequestAndResponse`, `announcements`,
+  `termsOfServiceAccepted`, PDTB2 + ToS hooks) preserves the
+  pre-logOn handshake.
+
+- **N2: `stopSession` drops the caller's token from `_SESSIONS`.**
+  The adapter clears its own local sessionToken AFTER calling
+  `stopSession`, expecting the backend to be done with it.
+  Previously hummingbird returned `True` without touching
+  `_SESSIONS`, so tokens lived forever server-side (memory leak)
+  AND violated the adapter's invariant that `stopSession` ->
+  `startSession` returns `False`. Router pops the token after a
+  successful dispatch; re-using the dropped token returns 401.
+
+- **N3: `contentResources` reads `accessMethod`** (the DODP-spec key
+  the PHP adapter sends via
+  `contentResources($contentId, $accessMethod)`) instead of `format`.
+  Previously fell back to the DAISY-202 default for every PHP-adapter
+  call -- a real format-selection bug masked by the default for
+  NNELS, real noise for any other backend. `format` still accepted
+  as a legacy alias for hummingbird-native clients.
+
+### Changed
+- **Prefetch in-flight dedupe is now content-keyed, not user-keyed.**
+  `download._INFLIGHT` was keyed on `(username, fmt, node_id)`, which
+  meant two users requesting the same multi-GB audiobook spawned two
+  independent fetch tasks against the same shared cache slot. The
+  key is now `(fmt, node_id)`: the audiobook bytes are identical for
+  any user with access, so one fetch task feeds both. The plugin
+  still receives the user that triggered the first request (for the
+  authenticated upstream session); on task failure the slot is
+  cleared and a subsequent request from a different user spawns a
+  fresh task.
+
+- **`contentMetadata` consults the active plugin when it can.** New
+  optional `Plugin.get_metadata(user, content_id)` hook (NOT
+  `@abstractmethod` -- existing plugins keep working). When a plugin
+  overrides it, real metadata (NNELS' 30-day cache: title, authors,
+  narrators, format) flows to KADOS' DC envelope instead of the
+  empty stub. Plugins that don't override get the prior minimal
+  `{dc:identifier, dc:title:"", dc:format:"", dc:creator:""}`.
+
+- **`/resources` and `/download` accept `Authorization: Session <token>`
+  in addition to Basic.** New `auth.current_user_basic_or_session`
+  dependency tries the KADOS session header first, falls back to
+  Basic. The resource URIs returned by KADOS `contentResources`
+  point at REST `/download`; DAISY-Online clients (EasyReader, a
+  future BookPlayer `.dodp` source) authenticate via session token
+  only and previously got 401 + a `WWW-Authenticate: Basic`
+  challenge they couldn't satisfy. BookPlayer's existing Basic-auth
+  flow is unchanged (regression-pinned).
+
+- **Startup warning when `HUMMINGBIRD_PUBLIC_BASE_URL` is unset.**
+  KADOS clients don't carry an HTTP base URL through their RPC, so
+  the KADOS surface emits relative resource URIs when the env var
+  isn't set. Some DAISY-Online clients won't resolve those against
+  the SOAP endpoint. The warning runs at app startup so operators
+  catch it before users do.
+
+### Tests
+38 new tests total. `test_storage.py` (path-component sanitization),
+`test_download.py` (content-keyed dedupe + prefetch SessionExpired
+propagation), `test_plugin_active.py` (SessionExpired -> 401 across
+every plugin-touching REST route + resources/download +
+`get_metadata` plugin path), `test_router_kados.py` (401 enforcement
+matrix, `stopSession` token-drop, `accessMethod` key, anonymous
+allow-list), `test_router_hummingbird.py` (`/download` and
+`/resources` accept Session tokens; Basic regression guard). 244
+total tests, coverage 94.39%.
+
+### KADOS contract reference
+- `cobdfamily/openapi-kados/services/kados/includes/adapters/OpenAPIAdapter.md`
+- `cobdfamily/openapi-kados/services/kados/includes/adapters/OpenAPIAdapter.class.php`
+
 ## [0.1.11] - 2026-05-03
 
 ### Tests
@@ -317,14 +443,5 @@ functional with JSON-on-disk state.
 
 [Unreleased]: https://github.com/cobdfamily/hummingbird/compare/v0.1.11...HEAD
 [0.1.11]: https://github.com/cobdfamily/hummingbird/compare/v0.1.10...v0.1.11
-[0.1.10]: https://github.com/cobdfamily/hummingbird/compare/v0.1.9...v0.1.10
-[0.1.9]: https://github.com/cobdfamily/hummingbird/compare/v0.1.8...v0.1.9
-[0.1.8]: https://github.com/cobdfamily/hummingbird/compare/v0.1.7...v0.1.8
-[0.1.7]: https://github.com/cobdfamily/hummingbird/compare/v0.1.6...v0.1.7
-[0.1.6]: https://github.com/cobdfamily/hummingbird/compare/v0.1.5...v0.1.6
-[0.1.5]: https://github.com/cobdfamily/hummingbird/compare/v0.1.4...v0.1.5
-[0.1.4]: https://github.com/cobdfamily/hummingbird/compare/v0.1.3...v0.1.4
-[0.1.3]: https://github.com/cobdfamily/hummingbird/compare/v0.1.2...v0.1.3
-[0.1.2]: https://github.com/cobdfamily/hummingbird/compare/v0.1.1...v0.1.2
-[0.1.1]: https://github.com/cobdfamily/hummingbird/compare/v0.1.0...v0.1.1
-[0.1.0]: https://github.com/cobdfamily/hummingbird/commits/v0.1.0
+</content>
+</invoke>

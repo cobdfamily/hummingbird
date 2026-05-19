@@ -458,3 +458,75 @@ def test_formats_endpoint_returns_id_to_label_map(client):
     body = r.json()
     # JSON keys are strings; integer 4 -> "MP3".
     assert body["4"] == "MP3"
+
+
+# ---------------------------------------------------------------------------
+# Session-token auth on /resources and /download (DAISY-Online clients)
+# ---------------------------------------------------------------------------
+
+
+def _cache_dir(tmp_path, fmt, node_id):
+    """Locate the same cache directory the route layer will look at
+    (HUMMINGBIRD_CACHE_DIR is set to ``tmp_path / "cache"`` by the
+    client fixture). Pre-populating a file there is enough to drive
+    the cache-HIT path on /download and /resources."""
+    p = tmp_path / "cache" / str(fmt) / str(node_id)
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def test_download_accepts_basic_auth(client, tmp_path):
+    """Existing Basic-auth callers (BookPlayer, curl with -u) keep
+    working. Regression guard for the dependency switch."""
+    (_cache_dir(tmp_path, 4, 555) / "song.mp3").write_bytes(b"AUDIO")
+    r = client.get("/protocols/hummingbird/v1/download/4/555/")
+    assert r.status_code == 200
+
+
+def test_download_accepts_kados_session_token(client, tmp_path):
+    """KADOS contentResources hands back /download URIs that the DAISY-
+    Online client (EasyReader, etc.) then fetches. Those clients
+    authenticate with `Authorization: Session <token>`, NOT Basic.
+    Without this support every resource fetch would 401 and the
+    end-to-end download flow would never complete."""
+    r = client.post(
+        "/protocols/kados/v1/methods/authenticate/",
+        json={"method": "authenticate", "data": {"username": "alice", "password": "secret"}},
+    )
+    assert r.status_code == 200
+    token = r.json()["data"]["sessionToken"]
+
+    (_cache_dir(tmp_path, 4, 666) / "song.mp3").write_bytes(b"AUDIO-BYTES")
+
+    r = client.get(
+        "/protocols/hummingbird/v1/download/4/666/",
+        headers={"Authorization": f"Session {token}"},
+    )
+    assert r.status_code == 200
+    assert r.content == b"AUDIO-BYTES"
+
+
+def test_download_rejects_invalid_session_token(client, tmp_path):
+    r = client.get(
+        "/protocols/hummingbird/v1/download/4/777/",
+        headers={"Authorization": "Session not-a-real-token"},
+    )
+    assert r.status_code == 401
+    # No Basic challenge -- caller explicitly chose Session.
+    assert r.headers.get("WWW-Authenticate") != "Basic"
+
+
+def test_resources_accepts_kados_session_token(client, tmp_path):
+    r = client.post(
+        "/protocols/kados/v1/methods/authenticate/",
+        json={"method": "authenticate", "data": {"username": "alice", "password": "secret"}},
+    )
+    token = r.json()["data"]["sessionToken"]
+
+    (_cache_dir(tmp_path, 4, 888) / "track.mp3").write_bytes(b"AUDIO")
+
+    r = client.get(
+        "/protocols/hummingbird/v1/resources/4/888",
+        headers={"Authorization": f"Session {token}"},
+    )
+    assert r.status_code == 200
